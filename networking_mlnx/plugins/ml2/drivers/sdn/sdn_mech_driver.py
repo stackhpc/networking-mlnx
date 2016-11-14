@@ -16,6 +16,7 @@ import functools
 
 from neutron.common import constants as neutron_const
 from neutron.db import api as db_api
+from neutron.extensions import portbindings
 from neutron.objects.qos import policy as policy_object
 from neutron.plugins.common import constants
 from neutron.plugins.ml2 import driver_api as api
@@ -152,8 +153,21 @@ class SDNMechanismDriver(api.MechanismDriver):
         if not self._is_allowed_physical_networks(context.network):
             return
         port_dic = context.current
+        orig_port_dict = context.original
         port_dic[NETWORK_QOS_POLICY] = (
             self._get_network_qos_policy(context, port_dic['network_id']))
+        # delete the port in case instance is deleted
+        # and port is created separately
+        if (orig_port_dict[portbindings.HOST_ID] and
+                not port_dic[portbindings.HOST_ID]):
+            SDNMechanismDriver._record_in_journal(
+                context, sdn_const.PORT, sdn_const.DELETE, port_dic)
+        # delete the port in case instance is migrated to another hypervisor
+        elif (orig_port_dict[portbindings.HOST_ID] and
+              port_dic[portbindings.HOST_ID] !=
+              orig_port_dict[portbindings.HOST_ID]):
+            SDNMechanismDriver._record_in_journal(
+                context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
         SDNMechanismDriver._record_in_journal(
             context, sdn_const.PORT, sdn_const.PUT, port_dic)
 
@@ -174,10 +188,14 @@ class SDNMechanismDriver(api.MechanismDriver):
         if not self._is_allowed_physical_networks(context.network):
             return
         port_dic = context.current
-        port_dic[NETWORK_QOS_POLICY] = (
-            self._get_network_qos_policy(context, port_dic['network_id']))
-        SDNMechanismDriver._record_in_journal(
-            context, sdn_const.PORT, sdn_const.DELETE, port_dic)
+        # delete the port only if attached to a host
+        if (port_dic[portbindings.HOST_ID] and
+            self._is_send_bind_port(port_dic)):
+                port_dic[NETWORK_QOS_POLICY] = (
+                    self._get_network_qos_policy(context,
+                                                 port_dic['network_id']))
+                SDNMechanismDriver._record_in_journal(
+                    context, sdn_const.PORT, sdn_const.DELETE, port_dic)
 
     @journal.call_thread_on_end
     def sync_from_callback(self, operation, res_type, res_id, resource_dict):
