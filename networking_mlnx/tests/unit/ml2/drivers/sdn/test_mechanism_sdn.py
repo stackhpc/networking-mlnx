@@ -17,10 +17,10 @@ import mock
 import requests
 
 from neutron.db import api as neutron_db_api
-from neutron.plugins.common import constants
 from neutron.plugins.ml2 import plugin
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron.tests.unit import testlib_api
+from neutron_lib import constants
 from oslo_config import cfg
 from oslo_config import fixture as fixture_config
 from oslo_serialization import jsonutils

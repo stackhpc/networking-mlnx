@@ -51,7 +51,7 @@ class MaintenanceThread(object):
 
     def execute_ops(self):
         LOG.info(_LI("Starting journal maintenance run."))
-        session = neutron_db_api.get_session()
+        session = neutron_db_api.get_reader_session()
         if not db.lock_maintenance(session):
             LOG.info(_LI("Maintenance already running, aborting."))
             return
