@@ -20,7 +20,6 @@ from neutron.objects.qos import policy as policy_object
 from neutron.plugins.ml2 import driver_api as api
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as neutron_const
-from neutron_lib import constants
 from oslo_config import cfg
 from oslo_log import log
 
@@ -83,7 +82,7 @@ class SDNMechanismDriver(api.MechanismDriver):
         self._start_maintenance_thread()
         self.supported_vnic_types = [portbindings.VNIC_BAREMETAL]
         self.supported_network_types = (
-            [constants.TYPE_VLAN, constants.TYPE_FLAT])
+            [neutron_const.TYPE_VLAN, neutron_const.TYPE_FLAT])
         self.vif_type = portbindings.VIF_TYPE_OTHER
         self.vif_details = {}
         self.allowed_physical_networks = cfg.CONF.sdn.physical_networks
