@@ -14,13 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from neutron.plugins.ml2 import driver_api as api
 from neutron.plugins.ml2.drivers import mech_agent
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import port
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as p_constants
 from neutron_lib.plugins import directory
+from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 
 from networking_mlnx.plugins.ml2.drivers.mlnx import config  # noqa
