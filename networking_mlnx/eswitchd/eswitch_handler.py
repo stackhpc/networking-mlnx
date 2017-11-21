@@ -251,7 +251,7 @@ class eSwitchHandler(object):
         command_utils.execute(*cmd)
 
     def _get_guid_idx(self, pf_mlx_dev, dev, hca_port):
-        path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_dev, dev, hca_port)
+        path = constants.MLNX4_GUID_INDEX_PATH % (pf_mlx_dev, dev, hca_port)
         with open(path) as fd:
             idx = fd.readline().strip()
         return idx
