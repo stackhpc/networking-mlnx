@@ -25,7 +25,6 @@ from neutron.agent import securitygroups_rpc as agent_sg_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import config as common_config
 from neutron.common import topics
-from neutron.plugins.common import constants as p_const
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.utils import helpers as q_utils
@@ -104,7 +103,7 @@ class EswitchManager(object):
         net_map = self.network_map[network_id]
         net_map['ports'].append({'port_id': port_id, 'port_mac': port_mac})
 
-        if network_type == p_const.TYPE_VLAN:
+        if network_type == constants.TYPE_VLAN:
             LOG.info(_LI('Binding Segmentation ID %(seg_id)s '
                          'to eSwitch for vNIC mac_address %(mac)s'),
                      {'seg_id': seg_id,
@@ -113,7 +112,7 @@ class EswitchManager(object):
                                         seg_id,
                                         port_mac)
 
-        elif network_type == p_const.TYPE_FLAT:
+        elif network_type == constants.TYPE_FLAT:
             LOG.info(_LI('Binding eSwitch for vNIC mac_address %(mac)s'
                          'to flat network'),
                      {'mac': port_mac})
