@@ -294,7 +294,7 @@ class eSwitchHandler(object):
             INVALID_PKEY, DEFAULT_PKEY_IDX, pf_mlx_dev, dev, hca_port)
 
         guid_idx = self._get_guid_idx(pf_mlx_dev, dev, hca_port)
-        path = constants.MLNX4_GUID_INDEX_PATH % (
+        path = constants.MLNX4_ADMIN_GUID_PATH % (
             pf_mlx_dev, hca_port, guid_idx)
         cmd = ['ebrctl', 'write-sys', path, vguid]
         command_utils.execute(*cmd)
