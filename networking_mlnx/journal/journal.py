@@ -16,7 +16,7 @@
 import re
 import threading
 
-from neutron.db import api as neutron_db_api
+from neutron_lib import context as nl_context
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
@@ -87,9 +87,9 @@ class SdnJournalThread(object):
                 self.event.wait()
                 self.event.clear()
 
-                session = neutron_db_api.get_session()
-                self._sync_pending_rows(session, exit_after_run)
-                self._sync_progress_rows(session)
+                context = nl_context.get_admin_context()
+                self._sync_pending_rows(context.session, exit_after_run)
+                self._sync_progress_rows(context.session)
 
                 LOG.debug("Clearing sync thread event")
                 if exit_after_run:

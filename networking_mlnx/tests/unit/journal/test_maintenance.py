@@ -28,7 +28,7 @@ from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
     def setUp(self):
         super(MaintenanceThreadTestCase, self).setUp()
-        self.db_session = neutron_db_api.get_session()
+        self.db_session = neutron_db_api.get_writer_session()
 
         row = sdn_maintenance_db.SdnMaintenance(state=sdn_const.PENDING)
         self.db_session.add(row)
