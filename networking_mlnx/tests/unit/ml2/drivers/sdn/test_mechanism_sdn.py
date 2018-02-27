@@ -16,11 +16,11 @@ import datetime
 import mock
 import requests
 
-from neutron.db import api as neutron_db_api
 from neutron.plugins.ml2 import plugin
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron.tests.unit import testlib_api
 from neutron_lib import constants
+from neutron_lib import context as nl_context
 from oslo_config import cfg
 from oslo_config import fixture as fixture_config
 from oslo_serialization import jsonutils
@@ -143,7 +143,8 @@ class SdnDriverTestCase(SdnConfigBase):
 
     def setUp(self):
         super(SdnDriverTestCase, self).setUp()
-        self.db_session = neutron_db_api.get_session()
+        context = nl_context.get_admin_context()
+        self.db_session = context.session
         self.mech = sdn_mech_driver.SDNMechanismDriver()
         self.mock_sync_thread = mock.patch.object(
             journal.SdnJournalThread, 'start_sync_thread').start()
@@ -166,7 +167,8 @@ class SdnDriverTestCase(SdnConfigBase):
         context = mock.Mock(current=current, _network=current,
                             _segments=self._get_segments_list(),
                             network_segments=self._get_segments_list())
-        context._plugin_context.session = neutron_db_api.get_session()
+        context._plugin_context.session = (
+            nl_context.get_admin_context().session)
         return context
 
     def _get_mock_port_operation_context(self):
@@ -201,7 +203,8 @@ class SdnDriverTestCase(SdnConfigBase):
         context = mock.Mock(current=current, _port=current,
                             original=original,
                             network=network_context)
-        context._plugin_context.session = neutron_db_api.get_session()
+        context._plugin_context.session = (
+            nl_context.get_admin_context().session)
         return context
 
     def _get_mock_bind_operation_context(self):
@@ -223,7 +226,8 @@ class SdnDriverTestCase(SdnConfigBase):
         context = mock.Mock(current=current, _port=current,
                             segments_to_bind=self._get_segments_list(),
                             network=network_context)
-        context._plugin_context.session = neutron_db_api.get_session()
+        context._plugin_context.session = (
+            nl_context.get_admin_context().session)
         return context
 
     def _get_mock_operation_context(self, object_type):

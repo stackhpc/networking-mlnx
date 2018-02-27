@@ -16,8 +16,8 @@ from datetime import datetime
 from datetime import timedelta
 
 import mock
-from neutron.db import api as neutron_db_api
 from neutron.tests.unit import testlib_api
+from neutron_lib import context
 from oslo_db import exception
 
 from networking_mlnx.db import db
@@ -33,7 +33,8 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
 
     def setUp(self):
         super(DbTestCase, self).setUp()
-        self.db_session = neutron_db_api.get_session()
+        self.db_context = context.get_admin_context()
+        self.db_session = self.db_context.session
         self.addCleanup(self._db_cleanup)
 
     def _db_cleanup(self):
