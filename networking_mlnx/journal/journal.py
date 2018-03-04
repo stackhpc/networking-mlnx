@@ -139,6 +139,9 @@ class SdnJournalThread(object):
                         urlpath, jsonutils.loads(row.data)))
                 if response.status_code == requests.codes.not_implemented:
                     db.update_db_row_state(session, row, sdn_const.COMPLETED)
+                elif (response.status_code == requests.codes.not_found and
+                      row.operation == sdn_const.DELETE):
+                    db.update_db_row_state(session, row, sdn_const.COMPLETED)
                 else:
                     # update in progress and job_id
                     job_id = None
