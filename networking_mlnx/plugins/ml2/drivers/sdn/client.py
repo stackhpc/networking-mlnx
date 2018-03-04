@@ -96,14 +96,19 @@ class SdnRestClient(object):
                   {'method': method, 'url': urlpath, 'data': data})
         return self._check_rensponse(session.request(
                 method, url=str(urlpath), headers=sdn_const.JSON_HTTP_HEADER,
-                data=data, timeout=self.timeout))
+                data=data, timeout=self.timeout), method)
 
-    def _check_rensponse(self, response):
+    def _check_rensponse(self, response, method):
         try:
             LOG.debug("request status: %d", response.status_code)
+            request_found = True
             if response.text:
                 LOG.debug("request text: %s", response.text)
-            if response.status_code != requests.codes.not_implemented:
+            if (response.status_code == requests.codes.not_found
+                and method == sdn_const.DELETE):
+                request_found = False
+            if (request_found and
+                response.status_code != requests.codes.not_implemented):
                 response.raise_for_status()
         except Exception as e:
             raise sdn_exc.SDNConnectionError(msg=e)
