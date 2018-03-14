@@ -24,7 +24,7 @@ from neutron.agent import rpc as agent_rpc
 from neutron.agent import securitygroups_rpc as agent_sg_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import config as common_config
-from neutron.common import topics
+from neutron_lib.agent import topics
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.utils import helpers as q_utils
