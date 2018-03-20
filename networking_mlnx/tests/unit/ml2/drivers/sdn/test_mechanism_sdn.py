@@ -79,7 +79,8 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
 
     def _set_config(self, url='http://127.0.0.1/neo',
                     username='admin',
-                    password='123456'):
+                    password='123456',
+                    sync_enabled=True):
         self.conf_fixture = self.useFixture(fixture_config.Config())
         self.conf = self.conf_fixture.conf
         self.conf.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
@@ -89,6 +90,8 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
         self.conf.set_override('url', url, sdn_const.GROUP_OPT)
         self.conf.set_override('username', username, sdn_const.GROUP_OPT)
         self.conf.set_override('password', password, sdn_const.GROUP_OPT)
+        self.conf.set_override('sync_enabled', sync_enabled,
+                               sdn_const.GROUP_OPT)
 
     def _test_missing_config(self, **kwargs):
         self._set_config(**kwargs)
@@ -107,6 +110,11 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
 
     def test_missing_password_raises_exception(self):
         self._test_missing_config(password=None)
+
+    def test_missing_config_ok_when_disabled(self):
+        self._set_config(url=None, username=None, password=None,
+                         sync_enabled=False)
+        plugin.Ml2Plugin()
 
     class SdnMechanismTestBasicGet(test_plugin.TestMl2BasicGet,
                                    SdnTestCase):

@@ -18,6 +18,10 @@ from networking_mlnx._i18n import _
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 
 sdn_opts = [
+        cfg.BoolOpt('sync_enabled',
+                    help=_("Whether synchronising state to an SDN provider is "
+                           "enabled."),
+                    default=True),
         cfg.StrOpt('url',
                    help=_("HTTP URL of SDN Provider."),
                    ),
