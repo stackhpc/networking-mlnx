@@ -50,6 +50,10 @@ class SdnRestClient(object):
         self.url.rstrip("/")
 
     def _validate_mandatory_params_exist(self):
+        if not self.url:
+            # Allow for no client config to be provided. This indicates that no
+            # SDN service is in use.
+            return
         for arg in self.MANDATORY_ARGS:
             if not getattr(self, arg):
                 raise cfg.RequiredOptError(

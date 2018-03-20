@@ -79,14 +79,20 @@ class SDNMechanismDriver(api.MechanismDriver):
     """
 
     def initialize(self):
-        self.journal = journal.SdnJournalThread()
-        self._start_maintenance_thread()
+        if self._is_sdn_sync_enabled():
+            self.journal = journal.SdnJournalThread()
+            self._start_maintenance_thread()
         self.supported_vnic_types = [portbindings.VNIC_BAREMETAL]
         self.supported_network_types = (
             [constants.TYPE_VLAN, constants.TYPE_FLAT])
         self.vif_type = portbindings.VIF_TYPE_OTHER
         self.vif_details = {}
         self.allowed_physical_networks = cfg.CONF.sdn.physical_networks
+
+    @staticmethod
+    def _is_sdn_sync_enabled():
+        """Whether to synchronise events to an SDN controller."""
+        return cfg.CONF.sdn.url is not None
 
     def _is_allowed_physical_network(self, physical_network):
         if (sdn_const.ANY in self.allowed_physical_networks or
@@ -116,6 +122,8 @@ class SDNMechanismDriver(api.MechanismDriver):
 
     @staticmethod
     def _record_in_journal(context, object_type, operation, data=None):
+        if not SDNMechanismDriver._is_sdn_sync_enabled():
+            return
         if data is None:
             data = context.current
         journal.record(context._plugin_context.session, object_type,
@@ -146,6 +154,11 @@ class SDNMechanismDriver(api.MechanismDriver):
 
         segments = context.network.network_segments
         for segment in segments:
+            if (segment[api.NETWORK_TYPE] != constants.TYPE_FLAT and
+                    not self._is_sdn_sync_enabled()):
+                # Don't bind to non-flat networks if not syncing to an SDN
+                # controller.
+                continue
             vnic_type = port_dic[portbindings.VNIC_TYPE]
             # set port to active if it is in the supported vnic types
             # currently used for VNIC_BAREMETAL
@@ -283,6 +296,8 @@ class SDNMechanismDriver(api.MechanismDriver):
                        operation, resource_dict)
 
     def _postcommit(self, context):
+        if not self._is_sdn_sync_enabled():
+            return
         self.journal.set_sync_event()
 
     create_network_postcommit = _postcommit
