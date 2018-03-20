@@ -134,9 +134,10 @@ class SDNMechanismDriver(api.MechanismDriver):
     @context_validator()
     @error_handler
     def bind_port(self, context):
+        if not self._is_allowed_physical_networks(context.network):
+            return
         port_dic = context.current
-        if (self._is_allowed_physical_networks(context.network) and
-            self._is_send_bind_port(port_dic)):
+        if self._is_send_bind_port(port_dic):
             port_dic[NETWORK_QOS_POLICY] = (
                 self._get_network_qos_policy(context, port_dic['network_id']))
             SDNMechanismDriver._record_in_journal(
