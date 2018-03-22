@@ -208,12 +208,23 @@ class SDNMechanismDriver(api.MechanismDriver):
                 SDNMechanismDriver._record_in_journal(
                     context, sdn_const.PORT, sdn_const.POST, port_dic)
                 return
+            elif (orig_link_info and orig_port_dict[portbindings.HOST_ID] and
+                    not port_dic[portbindings.HOST_ID]):
+                SDNMechanismDriver._record_in_journal(
+                    context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
+                return
             # InfiniBand Case
             current_client_id = self._get_client_id_from_port(port_dic)
             orig_client_id = self._get_client_id_from_port(orig_port_dict)
             if current_client_id != orig_client_id:
                 SDNMechanismDriver._record_in_journal(
                     context, sdn_const.PORT, sdn_const.POST, port_dic)
+                return
+            elif (orig_client_id and orig_port_dict[portbindings.HOST_ID] and
+                    not port_dic[portbindings.HOST_ID]):
+                SDNMechanismDriver._record_in_journal(
+                    context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
+                return
         # delete the port in case instance is deleted
         # and port is created separately
         elif (orig_port_dict[portbindings.HOST_ID] and
