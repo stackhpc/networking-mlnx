@@ -17,6 +17,7 @@ import functools
 
 from neutron.db import api as db_api
 from neutron.objects.qos import policy as policy_object
+from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as neutron_const
 from neutron_lib.plugins.ml2 import api
@@ -34,6 +35,7 @@ LOG = log.getLogger(__name__)
 cfg.CONF.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
 
 NETWORK_QOS_POLICY = 'network_qos_policy'
+DHCP_OPT_CLIENT_ID_NUM = '61'
 
 
 def context_validator(context_type=None):
@@ -117,6 +119,9 @@ class SDNMechanismDriver(api.MechanismDriver):
     def _record_in_journal(context, object_type, operation, data=None):
         if data is None:
             data = context.current
+        if object_type == sdn_const.PORT:
+            SDNMechanismDriver._replace_port_dhcp_opt_name(
+                data, DHCP_OPT_CLIENT_ID_NUM, edo_ext.DHCP_OPT_CLIENT_ID)
         journal.record(context._plugin_context.session, object_type,
                        context.current['id'], operation, data)
 
@@ -167,8 +172,18 @@ class SDNMechanismDriver(api.MechanismDriver):
         dhcp_opts = port.get('extra_dhcp_opts', [])
         for dhcp_opt in dhcp_opts:
             if (isinstance(dhcp_opt, dict) and
-                    dhcp_opt.get('opt_name') == 'client-id'):
+                    dhcp_opt.get('opt_name') in (edo_ext.DHCP_OPT_CLIENT_ID,
+                                                 DHCP_OPT_CLIENT_ID_NUM)):
                 return dhcp_opt.get('opt_value')
+
+    @staticmethod
+    def _replace_port_dhcp_opt_name(port, old_opt_name, new_opt_name):
+        dhcp_opts = port.get('extra_dhcp_opts', [])
+        for dhcp_opt in dhcp_opts:
+            if (isinstance(dhcp_opt, dict) and
+                    dhcp_opt.get('opt_name') == old_opt_name):
+                dhcp_opt['opt_name'] = new_opt_name
+                return
 
     def _get_local_link_information(self, port):
         binding_profile = port.get('binding:profile')
