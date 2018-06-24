@@ -321,3 +321,6 @@ class TestMlnxDnsmasq(test_dhcp.TestDnsmasq):
 
     def test_client_id_num(self):
         pass
+
+    def test_client_id_num_str(self):
+        pass
