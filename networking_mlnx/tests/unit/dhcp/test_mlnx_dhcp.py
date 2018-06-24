@@ -318,3 +318,9 @@ class TestMlnxDnsmasq(test_dhcp.TestDnsmasq):
             test_dhcp.FakeDualStackNetworkingSingleDHCPTags())
         dm._output_hosts_file()
         self.safe.assert_has_calls([mock.call(exp_host_name, exp_host_data)])
+
+    def test_client_id_num(self):
+        pass
+
+    def test_client_id_num_str(self):
+        pass
