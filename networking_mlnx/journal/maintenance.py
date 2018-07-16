@@ -14,7 +14,7 @@
 #    under the License.
 
 
-from neutron.db import api as neutron_db_api
+from neutron_lib.db import api as neutron_db_api
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_service import loopingcall

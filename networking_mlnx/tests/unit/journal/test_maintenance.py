@@ -17,8 +17,8 @@
 import mock
 import threading
 
-from neutron.db import api as neutron_db_api
 from neutron.tests.unit import testlib_api
+from neutron_lib.db import api as neutron_db_api
 
 from networking_mlnx.db.models import sdn_maintenance_db
 from networking_mlnx.journal import maintenance
