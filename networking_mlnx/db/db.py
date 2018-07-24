@@ -14,7 +14,7 @@
 #    under the License.
 import datetime
 
-from neutron.db import api as db_api
+from neutron_lib.db import api as db_api
 from oslo_db import api as oslo_db_api
 from oslo_serialization import jsonutils
 from sqlalchemy import asc
