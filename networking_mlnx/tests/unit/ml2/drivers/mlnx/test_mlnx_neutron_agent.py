@@ -116,19 +116,33 @@ class TestEswitchAgent(base.BaseTestCase):
                               'get_devices_details_list',
                               return_value=[details]),\
             mock.patch.object(self.agent.plugin_rpc, 'update_device_up') as upd_dev_up,\
+            mock.patch.object(self.agent.plugin_rpc, 'update_device_down') as upd_dev_down,\
             mock.patch.object(self.agent, func_name) as func:
             self.assertFalse(self.agent.treat_devices_added_or_updated([{}]))
-        return (func.called, upd_dev_up.called)
+        return (func.called, upd_dev_up.called, upd_dev_down.called)
 
     def test_treat_devices_added_updates_known_port(self):
         details = mock.MagicMock()
         details.__contains__.side_effect = lambda x: True
-        func, dev_up = self._mock_treat_devices_added_updated(details,
-                                                              'treat_vif_port')
+        func, dev_up, dev_down = self._mock_treat_devices_added_updated(
+                                 details, 'treat_vif_port')
         self.assertTrue(func)
         self.assertTrue(dev_up)
 
     def test_treat_devices_added_updates_known_port_admin_down(self):
+        details = {'device': '01:02:03:04:05:06',
+                   'network_id': '123456789',
+                   'network_type': 'vlan',
+                   'physical_network': 'default',
+                   'segmentation_id': 2,
+                   'admin_state_up': False}
+        func, dev_up, dev_down = self._mock_treat_devices_added_updated(
+                                     details, 'treat_vif_port')
+        self.assertFalse(func)
+        self.assertFalse(dev_up)
+        self.assertTrue(dev_down)
+
+    def test_treat_devices_added_updates_known_port_admin_up(self):
         details = {'port_id': '1234567890',
                    'device': '01:02:03:04:05:06',
                    'network_id': '123456789',
@@ -136,10 +150,11 @@ class TestEswitchAgent(base.BaseTestCase):
                    'physical_network': 'default',
                    'segmentation_id': 2,
                    'admin_state_up': False}
-        func, dev_up = self._mock_treat_devices_added_updated(details,
-                                                              'treat_vif_port')
+        func, dev_up, dev_down = self._mock_treat_devices_added_updated(
+                                 details, 'treat_vif_port')
         self.assertTrue(func)
-        self.assertFalse(dev_up)
+        self.assertTrue(dev_up)
+        self.assertFalse(dev_down)
 
     def test_treat_devices_removed_returns_true_for_missing_device(self):
         with mock.patch.object(self.agent.plugin_rpc, 'update_device_down',

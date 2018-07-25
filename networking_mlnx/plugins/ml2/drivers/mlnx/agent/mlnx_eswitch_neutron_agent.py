@@ -185,9 +185,10 @@ class MlnxEswitchNeutronAgent(object):
         self._polling_interval = cfg.CONF.AGENT.polling_interval
         self._setup_eswitches(interface_mapping)
         configurations = {'interface_mappings': interface_mapping}
+        self.conf = cfg.CONF
         self.agent_state = {
             'binary': 'neutron-mlnx-agent',
-            'host': cfg.CONF.host,
+            'host': self.conf.host,
             'topic': constants.L2_AGENT_TOPIC,
             'configurations': configurations,
             'agent_type': mech_mlnx.AGENT_TYPE_MLNX,
@@ -298,7 +299,8 @@ class MlnxEswitchNeutronAgent(object):
             devs_details_list = self.plugin_rpc.get_devices_details_list(
                 self.context,
                 devices,
-                self.agent_id)
+                self.agent_id,
+                self.conf.host)
         except Exception as e:
             LOG.debug("Unable to get device details for devices "
                       "with MAC address %(devices)s: due to %(exc)s",
@@ -320,16 +322,14 @@ class MlnxEswitchNeutronAgent(object):
                                     dev_details['physical_network'],
                                     dev_details['segmentation_id'],
                                     dev_details['admin_state_up'])
-                if dev_details.get('admin_state_up'):
-                    LOG.debug("Setting status for %s to UP", device)
-                    self.plugin_rpc.update_device_up(
-                        self.context, device, self.agent_id)
-                else:
-                    LOG.debug("Setting status for %s to DOWN", device)
-                    self.plugin_rpc.update_device_down(
-                        self.context, device, self.agent_id)
+                LOG.debug("Setting status for %s to UP", device)
+                self.plugin_rpc.update_device_up(
+                    self.context, device, self.agent_id, self.conf.host)
             else:
-                LOG.debug("Device with mac_address %s not defined "
+                LOG.debug("Setting status for %s to DOWN", device)
+                self.plugin_rpc.update_device_down(
+                    self.context, device, self.agent_id, self.conf.host)
+                LOG.error("Device with mac_address %s not defined "
                           "on Neutron Plugin", device)
         return False
 
@@ -342,7 +342,8 @@ class MlnxEswitchNeutronAgent(object):
                 dev_details = self.plugin_rpc.update_device_down(self.context,
                                                                  port_id,
                                                                  self.agent_id,
-                                                                 cfg.CONF.host)
+                                                                 self.conf.host
+                                                                 )
             except Exception as e:
                 LOG.debug("Removing port failed for device %(device)s "
                           "due to %(exc)s", {'device': device, 'exc': e})
