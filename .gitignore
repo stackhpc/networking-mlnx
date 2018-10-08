@@ -24,3 +24,4 @@ setuptools*.egg/
 !/.mailmap
 !/.pylintrc
 !/.testr.conf
+!/.zuul.yaml

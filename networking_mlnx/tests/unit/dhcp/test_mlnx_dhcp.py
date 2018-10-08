@@ -15,6 +15,7 @@
 
 import mock
 from neutron.tests.unit.agent.linux import test_dhcp
+from neutron_lib import constants
 
 from networking_mlnx.dhcp import mlnx_dhcp
 
@@ -199,17 +200,33 @@ class TestMlnxDnsmasq(test_dhcp.TestDnsmasq):
         mac2 = '00:00:0f:aa:bb:55'
         client_id2 = ('ff:00:00:00:00:00:02:00:00:02:c9:00:00:00:0f:'
                       '00:00:aa:bb:55')
+        ip6 = '2001:0db8:11a3:09d7:1f34:8a2e:07a0:765d'
 
         old_leases = set([(ip1, mac1, client_id1), (ip2, mac2, client_id2)])
         dnsmasq._read_hosts_file_leases = mock.Mock(return_value=old_leases)
         dnsmasq._output_hosts_file = mock.Mock()
+        # Because the lease release code could fire multiple times, the
+        # second read of the lease file must not have the entries that
+        # would have been released.
+        dnsmasq._read_leases_file_leases = mock.Mock(
+            side_effect=[{ip6: {'iaid': 0xff,
+                                'client_id': 'client_id',
+                                'server_id': 'server_id'},
+                          ip1: {'iaid': mac1,
+                                'client_id': client_id1,
+                                'server_id': 'server_id'}
+                          },
+                         {ip6: {'iaid': 0xff,
+                                'client_id': 'client_id',
+                                'server_id': 'server_id'}
+                          }])
         dnsmasq._release_lease = mock.Mock()
         dnsmasq.network.ports = [test_dhcp.FakePort5()]
 
         dnsmasq._release_unused_leases()
 
         dnsmasq._release_lease.assert_called_once_with(
-            mac1, ip1, client_id1)
+            mac1, ip1, constants.IP_VERSION_4, client_id1, 'server_id', mac1)
 
     def test_only_populates_dhcp_client_id(self):
         exp_host_name = '/dhcp/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/host'
@@ -301,3 +318,9 @@ class TestMlnxDnsmasq(test_dhcp.TestDnsmasq):
             test_dhcp.FakeDualStackNetworkingSingleDHCPTags())
         dm._output_hosts_file()
         self.safe.assert_has_calls([mock.call(exp_host_name, exp_host_data)])
+
+    def test_client_id_num(self):
+        pass
+
+    def test_client_id_num_str(self):
+        pass
