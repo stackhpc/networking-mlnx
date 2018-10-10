@@ -94,11 +94,11 @@ class SdnRestClient(object):
 
         LOG.debug("Sending METHOD %(method)s URL %(url)s JSON %(data)s",
                   {'method': method, 'url': urlpath, 'data': data})
-        return self._check_rensponse(session.request(
+        return self._check_response(session.request(
                 method, url=str(urlpath), headers=sdn_const.JSON_HTTP_HEADER,
                 data=data, timeout=self.timeout), method)
 
-    def _check_rensponse(self, response, method):
+    def _check_response(self, response, method):
         try:
             LOG.debug("request status: %d", response.status_code)
             request_found = True

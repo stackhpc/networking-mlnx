@@ -169,14 +169,15 @@ class SdnJournalThread(object):
                         db.update_db_row_state(
                             session, row, sdn_const.MONITORING)
                     else:
-                        LOG.warning(_LW("object %s has join id is NULL"),
+                        LOG.warning(_LW("object %s has NULL job_id"),
                                     row.object_uuid)
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
-                # Don't raise the retry count, just log an error
+                # Log an error and raise the retry count. If the retry count
+                # exceeds the limit, move it to the failed state.
                 LOG.error(_LE("Cannot connect to the NEO Controller"))
                 db.update_pending_db_row_retry(session, row,
                                                self._row_retry_count)
-                # Break our of the loop and retry with the next
+                # Break out of the loop and retry with the next
                 # timer interval
                 break
 
@@ -192,7 +193,7 @@ class SdnJournalThread(object):
         for row in rows:
             try:
                 if row.job_id is None:
-                    LOG.warning(_LW("object %s has join id is NULL"),
+                    LOG.warning(_LW("object %s has NULL job_id"),
                                 row.object_uuid)
                     continue
                 response = self.client.get(row.job_id.strip("/"))
@@ -229,6 +230,6 @@ class SdnJournalThread(object):
                 # Don't raise the retry count, just log an error
                 LOG.error(_LE("Cannot connect to the NEO Controller"))
                 db.update_db_row_state(session, row, sdn_const.PENDING)
-                # Break our of the loop and retry with the next
+                # Break out of the loop and retry with the next
                 # timer interval
                 break
