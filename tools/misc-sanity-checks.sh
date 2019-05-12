@@ -30,7 +30,7 @@ check_opinionated_shell () {
     # Check that shell scripts are not bash opinionated (ignore comments though)
     # If you cannot avoid the use of bash, please change the EXPECTED var below.
     OBSERVED=$(grep -E '^([^#]|#!).*bash' tox.ini tools/* | wc -l)
-    EXPECTED=5
+    EXPECTED=6
     if [ ${EXPECTED} -ne ${OBSERVED} ]; then
         echo "Bash usage has been detected!" >>$FAILURES
     fi
