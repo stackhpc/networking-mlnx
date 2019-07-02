@@ -29,6 +29,7 @@ from networking_mlnx.journal import journal
 from networking_mlnx.journal import maintenance
 from networking_mlnx.plugins.ml2.drivers.sdn import config
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
+from networking_mlnx.plugins.ml2.drivers.sdn import exceptions as sdn_excpt
 
 LOG = log.getLogger(__name__)
 cfg.CONF.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
@@ -76,6 +77,11 @@ class SDNMechanismDriver(api.MechanismDriver):
     The notifications are for port/network changes.
     """
 
+    supported_device_owners = [neutron_const.DEVICE_OWNER_DHCP,
+                               neutron_const.DEVICE_OWNER_ROUTER_INTF,
+                               neutron_const.DEVICE_OWNER_ROUTER_GW,
+                               neutron_const.DEVICE_OWNER_FLOATINGIP]
+
     def initialize(self):
         if self._is_sdn_sync_enabled():
             self.journal = journal.SdnJournalThread()
@@ -85,7 +91,36 @@ class SDNMechanismDriver(api.MechanismDriver):
             [neutron_const.TYPE_VLAN, neutron_const.TYPE_FLAT])
         self.vif_type = portbindings.VIF_TYPE_OTHER
         self.vif_details = {}
+        SDNMechanismDriver._check_physnet_confs()
         self.allowed_physical_networks = cfg.CONF.sdn.physical_networks
+        self.bind_normal_ports = cfg.CONF.sdn.bind_normal_ports
+        self.bind_normal_ports_physnets = (
+            cfg.CONF.sdn.bind_normal_ports_physnets)
+
+    @staticmethod
+    def _check_physnet_confs():
+        """Check physical network related ML2 driver configuration options"""
+
+        def _is_sublist(sub, lst):
+            return functools.reduce(
+                lambda x, y: x & y, map(lambda x: x in lst, sub))
+
+        LOG.debug("physnet Config opts: physical_networks=%s, "
+                  "bind_normal_ports=%s, bind_normal_ports_physnets=%s",
+                  cfg.CONF.sdn.physical_networks,
+                  cfg.CONF.sdn.bind_normal_ports,
+                  cfg.CONF.sdn.bind_normal_ports_physnets)
+
+        # Note(adrianc): if `bind_normal_ports` is set then
+        # `bind_normal_ports_physnets` must be a subset of `physical_networks`
+        if (cfg.CONF.sdn.bind_normal_ports and
+                not (sdn_const.ANY in cfg.CONF.sdn.physical_networks) and
+                _is_sublist(
+                    cfg.CONF.sdn.bind_normal_ports_physnets,
+                    cfg.CONF.sdn.physical_networks)):
+            raise sdn_excpt.SDNDriverConfError(
+                msg="'bind_normal_ports_physnets' configuration option is "
+                    "expected to be a subset of 'physical_networks'.")
 
     @staticmethod
     def _is_sdn_sync_enabled():
@@ -94,7 +129,7 @@ class SDNMechanismDriver(api.MechanismDriver):
 
     def _is_allowed_physical_network(self, physical_network):
         if (sdn_const.ANY in self.allowed_physical_networks or
-            physical_network in self.allowed_physical_networks):
+                physical_network in self.allowed_physical_networks):
             return True
         return False
 
@@ -160,10 +195,9 @@ class SDNMechanismDriver(api.MechanismDriver):
                 # Don't bind to non-flat networks if not syncing to an SDN
                 # controller.
                 continue
-            vnic_type = port_dic[portbindings.VNIC_TYPE]
-            # set port to active if it is in the supported vnic types
-            # currently used for VNIC_BAREMETAL
-            if vnic_type in self.supported_vnic_types:
+
+            # set port to active if supported
+            if self._is_port_set_binding_supported(port_dic, segment):
                 context.set_binding(segment[api.ID],
                                     self.vif_type,
                                     self.vif_details,
@@ -323,13 +357,42 @@ class SDNMechanismDriver(api.MechanismDriver):
         """Verify that bind port is occur in compute context
 
         The request HTTP will occur only when the device owner is compute
-        or dhcp.
+        or when device owner is in self.supported_device_owners
         """
         device_owner = port_context['device_owner']
         return (device_owner and
                 (device_owner.lower().startswith(
                  neutron_const.DEVICE_OWNER_COMPUTE_PREFIX) or
-                 device_owner == neutron_const.DEVICE_OWNER_DHCP))
+                 device_owner in self.supported_device_owners))
+
+    def _is_port_set_binding_supported(self, port, segment):
+        """Check if driver is able to bind the port
+
+        Port binding is supported if:
+          a. Port VNIC type in supported_vnic_types (currently VNIC_BAREMETAL).
+        Or
+          b. Port is of VNIC type normal and:
+            1. bind_normal_ports cfg opt is set.
+            2. The segment's physnet is in bind_normal_ports_physnets cfg opt.
+            3. The device owner is DHCP/Router(Non DVR) related port.
+
+        :param port: port object
+        :param segment: Segment dictionary representing the network segment
+                        to bind on.
+        :return: True if port binding is supported by the driver else False.
+        """
+        vnic_type = port[portbindings.VNIC_TYPE]
+
+        if vnic_type in self.supported_vnic_types:
+            return True
+
+        if (vnic_type == portbindings.VNIC_NORMAL and
+                self.bind_normal_ports and
+                port['device_owner'] in self.supported_device_owners and
+                segment.get('physical_network') in
+                self.bind_normal_ports_physnets):
+            return True
+        return False
 
     def check_segment(self, segment):
         """Verify if a segment is valid for the SDN MechanismDriver.
