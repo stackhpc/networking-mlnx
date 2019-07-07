@@ -169,7 +169,8 @@ class SDNMechanismDriver(api.MechanismDriver):
             if vnic_type in self.supported_vnic_types:
                 context.set_binding(segment[api.ID],
                                     self.vif_type,
-                                    self.vif_details)
+                                    self.vif_details,
+                                    neutron_const.PORT_STATUS_ACTIVE)
 
     @context_validator(sdn_const.NETWORK)
     @error_handler
