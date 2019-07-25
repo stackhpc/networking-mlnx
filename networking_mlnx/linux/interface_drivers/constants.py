@@ -15,3 +15,4 @@
 import neutron_lib.api.definitions.provider_net as prov_net_attr
 
 SEGMENTATION_ID = prov_net_attr.SEGMENTATION_ID
+ADMIN_STATE_UP = 'admin_state_up'
