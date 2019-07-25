@@ -15,4 +15,12 @@
 import neutron_lib.api.definitions.provider_net as prov_net_attr
 
 SEGMENTATION_ID = prov_net_attr.SEGMENTATION_ID
+PHYSICAL_NETWORK = prov_net_attr.PHYSICAL_NETWORK
 ADMIN_STATE_UP = 'admin_state_up'
+
+# Types of interfaces created by various neutron interface drivers
+INTERFACE_KIND_UNKNOWN = 'unknown'
+INTERFACE_KIND_OVS = 'openvswitch'
+INTERFACE_KIND_VETH = 'veth'
+INTERFACE_KIND_NULL = 'null'
+INTERFACE_KIND_IPOIB = 'ipoib'
