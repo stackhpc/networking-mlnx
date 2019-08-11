@@ -19,16 +19,9 @@ from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import context
 from neutron_lib.plugins.ml2 import api
-from oslo_config import cfg
-from oslo_config import fixture as fixture_config
 from oslo_utils import uuidutils
 
-from networking_mlnx.plugins.ml2.drivers.mlnx import config
 from networking_mlnx.plugins.ml2.drivers.mlnx import mech_mlnx
-
-
-cfg.CONF.import_group("MLNX_IB",
-                      'networking_mlnx.plugins.ml2.drivers.mlnx')
 
 
 class MlnxMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
@@ -134,66 +127,43 @@ class FakeContext(base.FakePortContext):
 
 class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
                                   test_plugin.Ml2PluginV2TestCase):
-                                # api_base.BaseNetworkTest):
     mechanism_drivers = ['mlnx_infiniband']
+    expected_client_id = (
+        "ff:00:00:00:00:00:02:00:00:02:c9:00:01:23:45:00:00:67:89:ab")
 
     def setUp(self):
         super(MlnxMechanismIbPortTestCase, self).setUp()
-        self.conf_fixture = self.useFixture(fixture_config.Config())
-        self.conf = self.conf_fixture.conf
-        self.conf.register_opts(config.mlnx_ib_opts, "MLNX_IB")
-        self.conf.set_override('update_client_id', True, "MLNX_IB")
 
     def _get_context(self):
         VLAN_SEGMENTS = [{api.ID: 'vlan_segment_id',
                           api.NETWORK_TYPE: 'vlan',
                           api.PHYSICAL_NETWORK: 'fake_physical_network',
                           api.SEGMENTATION_ID: 1234}]
-        original_context = {'binding:host_id': uuidutils.generate_uuid()}
+        original_context = {'id': uuidutils.generate_uuid(),
+                'binding:host_id': None}
         current_context = {'id': uuidutils.generate_uuid(),
-                           'binding:host_id': uuidutils.generate_uuid(),
+                           'binding:host_id': 'host1',
                            'mac_address': '01:23:45:67:89:ab',
-                           'device_owner': portbindings.VNIC_DIRECT}
+                           'binding:vnic_type': portbindings.VNIC_DIRECT,
+                           'device_owner': 'compute'}
         return FakeContext(self.AGENT_TYPE,
                            self.AGENTS,
                            VLAN_SEGMENTS,
-                           portbindings.VNIC_DIRECT,
+               portbindings.VNIC_DIRECT,
                            original=original_context,
                            current=current_context)
 
-    def test_precommit_ib_port_non_migration(self):
+    def test_precommit_same_host_id(self):
         _context = self._get_context()
-        _context.original['binding:host_id'] = \
-            _context.current['binding:host_id']
-        self.driver.update_port_precommit(_context)
-        self.assertIsNone(_context.current.get('extra_dhcp_opts'))
+        with mock.patch('neutron_lib.plugins.directory.get_plugin'):
+            self.driver.update_port_precommit(_context)
+        self.assertIsNotNone(_context.current.get('extra_dhcp_opts'))
+        self.assertEqual(self.expected_client_id,
+                         _context.current['extra_dhcp_opts'][0]['opt_value'])
 
-    def test_precommit_ib_port_deleted_port(self):
+    def test_percommit_migrete_port(self):
         _context = self._get_context()
-        _context.current['binding:host_id'] = None
-        self.driver.update_port_precommit(_context)
-        self.assertIsNone(_context.current.get('extra_dhcp_opts'))
-
-    @mock.patch('networking_mlnx.plugins.ml2.drivers.mlnx.mech_mlnx.'
-                'MlnxMechanismDriver._process_port_info')
-    def test_precommit_ib_config_dont_update(self,
-                                             mocked_process_port_info):
-        _context = self._get_context()
-        self.conf.set_override('update_client_id', False, "MLNX_IB")
-        self.driver.update_port_precommit(_context)
-        self.assertFalse(mocked_process_port_info.called)
-
-    def test_percommit_ib_port_update_non_client_id(self):
-        _context = self._get_context()
-        _context.original['extra_dhcp_opts'] = tuple(['some_val'])
-        _context.current['extra_dhcp_opts'] = [{'opt_name': 'some_name',
-                                                'opt_value': 'not_none'}]
-        self.driver.update_port_precommit(_context)
-        self.assertIsNone(_context.current['extra_dhcp_opts'][0]['opt_value'])
-
-    # def test_precommit_ib_port_get_client_id(self):
-    #     _context = self._get_context()
-    #     network = [{api.ID: 'vlan_segment_id'}]
-    #     self.create_port(network, id=_context.current['id'])
-    #     self.driver.update_port_precommit(_context)
-    #     self.assertEqual(_context.current['extra_dhcp_opts'], [])
+        _context.current['binding:host_id'] = 'host2'
+        with mock.patch('neutron_lib.plugins.directory.get_plugin'):
+            self.driver.update_port_precommit(_context)
+        self.assertIsNotNone(_context.current.get('extra_dhcp_opts'))

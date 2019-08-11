@@ -21,9 +21,6 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as p_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
-from oslo_config import cfg
-
-from networking_mlnx.plugins.ml2.drivers.mlnx import config  # noqa
 
 AGENT_TYPE_MLNX = 'Mellanox plugin agent'
 VIF_TYPE_IB_HOSTDEV = 'ib_hostdev'
@@ -113,5 +110,4 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             {port.RESOURCE_NAME: updated_port})
 
     def update_port_precommit(self, context):
-        if cfg.CONF.MLNX_IB.update_client_id:
-            self._process_port_info(context)
+        self._process_port_info(context)
