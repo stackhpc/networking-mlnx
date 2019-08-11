@@ -96,7 +96,6 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         plugin = directory.get_plugin()
         # if host_id was empty
         if not original_port.get("binding:host_id"):
-            print(updated_port)
             # if port doesn't have extra_dhcp_opts
             if (not updated_port.get("extra_dhcp_opts") and
                 "compute" in updated_port["device_owner"] and
