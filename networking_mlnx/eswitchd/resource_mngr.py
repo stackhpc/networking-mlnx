@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from lxml import etree
+from defusedxml import ElementTree as ET
 
 import libvirt
 from oslo_log import log as logging
@@ -58,9 +58,9 @@ class ResourceManager(object):
 
         for domain in domains:
             raw_xml = domain.XMLDesc(0)
-            tree = etree.XML(raw_xml)
-            hostdevs = tree.xpath("devices/hostdev/source/address")
-            vm_id = tree.find('uuid').text
+            xml_root = ET.fromstring(raw_xml)
+            hostdevs = xml_root.findall("devices/hostdev/source/address")
+            vm_id = xml_root.find('uuid').text
             for dev in self._get_attached_hostdevs(hostdevs):
                 devices.append(dev)
                 vm_ids[dev[0]] = vm_id
