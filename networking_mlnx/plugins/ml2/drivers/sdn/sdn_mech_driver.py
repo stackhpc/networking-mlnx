@@ -24,7 +24,6 @@ from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 from oslo_log import log
 
-from networking_mlnx._i18n import _LE
 from networking_mlnx.journal import cleanup
 from networking_mlnx.journal import journal
 from networking_mlnx.journal import maintenance
@@ -63,11 +62,9 @@ def error_handler(func):
         try:
             return func(instance, *args, **kwargs)
         except Exception as e:
-            LOG.error(
-                    _LE("%(function_name)s %(exception_desc)s"),
-                    {'function_name': func.__name__,
-                    'exception_desc': str(e)}
-            )
+            LOG.error("%(function_name)s %(exception_desc)s",
+                      {'function_name': func.__name__,
+                      'exception_desc': str(e)})
     return wrapper
 
 

@@ -16,7 +16,6 @@
 from lxml import etree
 
 import libvirt
-from networking_mlnx._i18n import _LE, _LI, _LW
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
@@ -36,7 +35,7 @@ class ResourceManager(object):
         hca_port, pf_mlx_dev = self._get_pf_details(pf)
         self.device_db.add_fabric(fabric, pf, hca_port, pf_mlx_dev)
         vfs = self.discover_devices(pf)
-        LOG.info(_LI("PF %(pf)s, vfs = %(vf)s"), {'pf': pf, 'vf': vfs})
+        LOG.info("PF %(pf)s, vfs = %(vf)s", {'pf': pf, 'vf': vfs})
         self.device_db.set_fabric_devices(fabric, pf, vfs)
 
     def scan_attached_devices(self):
@@ -85,8 +84,7 @@ class ResourceManager(object):
                 macs_map[fabric] = \
                     self.pci_utils.get_vfs_macs_ib(fabric_details)
             except Exception:
-                LOG.exception(_LE("Failed to get vfs macs for fabric %s "),
-                              fabric)
+                LOG.exception("Failed to get vfs macs for fabric %s ", fabric)
                 continue
         return macs_map
 
@@ -114,10 +112,10 @@ class ResourceManager(object):
                         mac = self.macs_map[fabric][str(vf_index)]
                         devs.append((dev, mac, fabric))
                     except KeyError:
-                        LOG.warning(_LW("Failed to retrieve Hostdev MAC"
-                                        "for dev %s"), dev)
+                        LOG.warning("Failed to retrieve Hostdev MAC"
+                                    "for dev %s", dev)
             else:
-                LOG.info(_LI("No Fabric defined for device %s"), hostdev)
+                LOG.info("No Fabric defined for device %s", hostdev)
         return devs
 
     def _get_pf_details(self, pf):
