@@ -104,8 +104,8 @@ class SdnRestClient(object):
             request_found = True
             if response.text:
                 LOG.debug("request text: %s", response.text)
-            if (response.status_code == requests.codes.not_found
-                and method == sdn_const.DELETE):
+            if (response.status_code == requests.codes.not_found and
+                method == sdn_const.DELETE):
                 request_found = False
             if (request_found and
                 response.status_code != requests.codes.not_implemented):

@@ -30,11 +30,6 @@ ESWITCHD_BIN_DIR=$(get_python_exec_prefix)
 ESWITCHD_CONF_DIR=/etc/neutron/plugins/ml2
 ESWITCHD_CONF_FILE=$ESWITCHD_CONF_DIR/eswitchd.conf
 
-function install_eswitchd {
-    install_package python-ethtool
-}
-
-
 function configure_eswitchd {
     # setting up configuration
     sudo install -d -o $STACK_USER -m 755 $ESWITCHD_CONF_DIR

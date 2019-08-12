@@ -24,7 +24,7 @@ from networking_mlnx.plugins.ml2.drivers.mlnx.agent import exceptions
 
 
 class WrongException(Exception):
-        pass
+    pass
 
 
 class TestRetryDecorator(base.BaseTestCase):

@@ -294,11 +294,11 @@ class SDNMechanismDriver(api.MechanismDriver):
         if (port_dic[portbindings.HOST_ID] and
             (vnic_type == portbindings.VNIC_BAREMETAL or
              self._is_send_bind_port(port_dic))):
-                port_dic[NETWORK_QOS_POLICY] = (
-                    self._get_network_qos_policy(context,
-                                                 port_dic['network_id']))
-                SDNMechanismDriver._record_in_journal(
-                    context, sdn_const.PORT, sdn_const.DELETE, port_dic)
+            port_dic[NETWORK_QOS_POLICY] = (
+                self._get_network_qos_policy(context,
+                                             port_dic['network_id']))
+            SDNMechanismDriver._record_in_journal(
+                context, sdn_const.PORT, sdn_const.DELETE, port_dic)
 
     @journal.call_thread_on_end
     def sync_from_callback(self, operation, res_type, res_id, resource_dict):

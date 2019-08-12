@@ -14,9 +14,9 @@
 #    under the License.
 
 
-import mock
 import threading
 
+import mock
 from neutron.tests.unit import testlib_api
 from neutron_lib.db import api as neutron_db_api
 

@@ -118,7 +118,7 @@ class GetVnics(BasicMessageHandler):
         fabric = self.msg['fabric']
         if fabric == '*':
             fabrics = eswitch_handler.eswitches.keys()
-            LOG.info(_LI("fabrics = %s") % fabrics)
+            LOG.info(_LI("fabrics = %s"), fabrics)
         else:
             fabrics = [fabric]
         vnics = eswitch_handler.get_vnics(fabrics)

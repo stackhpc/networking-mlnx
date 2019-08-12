@@ -15,6 +15,7 @@
 # limitations under the License.
 
 from __future__ import print_function
+
 import sys
 
 from networking_mlnx.eswitchd.cli import conn_utils
@@ -68,6 +69,7 @@ def main():
             sys.stderr.write(e.message)
             sys.exit(1)
         sys.exit(0)
+
 
 if __name__ == '__main__':
     main()
