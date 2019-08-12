@@ -23,7 +23,6 @@ from oslo_serialization import jsonutils
 import requests
 from six.moves import html_parser
 
-from networking_mlnx._i18n import _LI, _LE, _LW
 from networking_mlnx.db import db
 from networking_mlnx.journal import dependency_validations
 from networking_mlnx.plugins.ml2.drivers.sdn import client
@@ -98,7 +97,7 @@ class SdnJournalThread(object):
                     break
             except Exception:
                 # Catch exceptions to protect the thread while running
-                LOG.exception(_LE("Error on run_sync_thread"))
+                LOG.exception("Error on run_sync_thread")
 
     def _sync_pending_rows(self, session, exit_after_run):
         while True:
@@ -111,8 +110,8 @@ class SdnJournalThread(object):
             # Validate the operation
             valid = dependency_validations.validate(session, row)
             if not valid:
-                LOG.info(_LI("%(operation)s %(type)s %(uuid)s is not a "
-                             "valid operation yet, skipping for now"),
+                LOG.info("%(operation)s %(type)s %(uuid)s is not a "
+                         "valid operation yet, skipping for now",
                          {'operation': row.operation,
                           'type': row.object_type,
                           'uuid': row.object_uuid})
@@ -123,7 +122,7 @@ class SdnJournalThread(object):
                     break
                 continue
 
-            LOG.info(_LI("Syncing %(operation)s %(type)s %(uuid)s"),
+            LOG.info("Syncing %(operation)s %(type)s %(uuid)s",
                      {'operation': row.operation, 'type': row.object_type,
                       'uuid': row.object_uuid})
 
@@ -161,7 +160,7 @@ class SdnJournalThread(object):
                             if match:
                                 job_id = match.group(1)
                     except Exception as e:
-                        LOG.error(_LE("Failed to extract job_id %s"), e)
+                        LOG.error("Failed to extract job_id %s", e)
 
                     if job_id:
                         db.update_db_row_job_id(
@@ -169,12 +168,12 @@ class SdnJournalThread(object):
                         db.update_db_row_state(
                             session, row, sdn_const.MONITORING)
                     else:
-                        LOG.warning(_LW("object %s has NULL job_id"),
+                        LOG.warning("object %s has NULL job_id",
                                     row.object_uuid)
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Log an error and raise the retry count. If the retry count
                 # exceeds the limit, move it to the failed state.
-                LOG.error(_LE("Cannot connect to the NEO Controller"))
+                LOG.error("Cannot connect to the NEO Controller")
                 db.update_pending_db_row_retry(session, row,
                                                self._row_retry_count)
                 # Break out of the loop and retry with the next
@@ -193,7 +192,7 @@ class SdnJournalThread(object):
         for row in rows:
             try:
                 if row.job_id is None:
-                    LOG.warning(_LW("object %s has NULL job_id"),
+                    LOG.warning("object %s has NULL job_id",
                                 row.object_uuid)
                     continue
                 response = self.client.get(row.job_id.strip("/"))
@@ -211,24 +210,24 @@ class SdnJournalThread(object):
                                        'status': job_status})
                             continue
                         else:
-                            LOG.error(_LE("NEO Job id %(job_id)s, failed with"
-                                          " %(status)s"),
+                            LOG.error("NEO Job id %(job_id)s, failed with"
+                                      " %(status)s",
                                       {'job_id': row.job_id,
                                        'status': job_status})
                             db.update_db_row_state(
                                 session, row, sdn_const.PENDING)
                     except ValueError or AttributeError:
-                        LOG.error(_LE("failed to extract response for job"
-                                      "id %s"), row.job_id)
+                        LOG.error("failed to extract response for job"
+                                  "id %s", row.job_id)
                 else:
-                    LOG.error(_LE("NEO Job id %(job_id)s, failed with "
-                                  "%(status)s"),
+                    LOG.error("NEO Job id %(job_id)s, failed with "
+                              "%(status)s",
                               {'job_id': row.job_id, 'status': job_status})
                     db.update_db_row_state(session, row, sdn_const.PENDING)
 
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Don't raise the retry count, just log an error
-                LOG.error(_LE("Cannot connect to the NEO Controller"))
+                LOG.error("Cannot connect to the NEO Controller")
                 db.update_db_row_state(session, row, sdn_const.PENDING)
                 # Break out of the loop and retry with the next
                 # timer interval

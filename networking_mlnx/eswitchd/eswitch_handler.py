@@ -16,7 +16,6 @@
 import glob
 import sys
 
-from networking_mlnx._i18n import _LE, _LI, _LW
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
@@ -51,9 +50,9 @@ class eSwitchHandler(object):
                 self.pci_utils.verify_vendor_pf(pf, constants.VENDOR))
             if (not verify_vendor_pf or
                 not self.pci_utils.is_sriov_pf(pf)):
-                LOG.error(_LE("PF %s must have Mellanox Vendor ID"
+                LOG.error("PF %s must have Mellanox Vendor ID "
                           ",SR-IOV and driver module "
-                          "enabled. Terminating!"), pf)
+                          "enabled. Terminating!", pf)
                 sys.exit(1)
 
             if self.eswitches.get(fabric) is None:
@@ -100,7 +99,7 @@ class eSwitchHandler(object):
                             eswitch.plug_nic(port_name=dev)
                         break
             else:
-                LOG.info(_LI("No Fabric defined for device %s"), dev)
+                LOG.info("No Fabric defined for device %s", dev)
 
     def _treat_removed_devices(self, devices):
         for dev, mac in devices:
@@ -110,7 +109,7 @@ class eSwitchHandler(object):
                     if dev in eswitch.vfs:
                         eswitch.detach_vnic(vnic_mac=mac)
             else:
-                LOG.info(_LI("No Fabric defined for device %s"), dev)
+                LOG.info("No Fabric defined for device %s", dev)
 
     def get_vnics(self, fabrics):
         vnics = {}
@@ -121,9 +120,9 @@ class eSwitchHandler(object):
                     vnics_for_eswitch = eswitch.get_attached_vnics()
                     vnics.update(vnics_for_eswitch)
             else:
-                LOG.error(_LE("No eSwitch found for Fabric %s"), fabric)
+                LOG.error("No eSwitch found for Fabric %s", fabric)
                 continue
-        LOG.info(_LI("vnics are %s"), vnics)
+        LOG.info("vnics are %s", vnics)
         return vnics
 
     def plug_nic(self, fabric, device_id, vnic_mac, pci_slot):
@@ -139,7 +138,7 @@ class eSwitchHandler(object):
             self._config_vf_mac_address(fabric, pci_slot, vnic_mac)
             eswitch.plug_nic(pci_slot)
         else:
-            LOG.error(_LE("No eSwitch found for Fabric %s"), fabric)
+            LOG.error("No eSwitch found for Fabric %s", fabric)
 
         return pci_slot
 
@@ -154,7 +153,7 @@ class eSwitchHandler(object):
                     break
 
         if dev is None:
-            LOG.warning(_LW("No eSwitch found for Fabric %s"), fabric)
+            LOG.warning("No eSwitch found for Fabric %s", fabric)
         return dev
 
     def port_release(self, fabric, vnic_mac):
@@ -182,7 +181,7 @@ class eSwitchHandler(object):
                 dev = eswitch.get_dev_for_vnic(vnic_mac)
                 break
         if not dev:
-            LOG.info(_LI("No device for MAC %s"), vnic_mac)
+            LOG.info("No device for MAC %s", vnic_mac)
 
     def port_down(self, fabric, vnic_mac):
         dev = None
@@ -191,11 +190,11 @@ class eSwitchHandler(object):
             if eswitch and vnic_mac in eswitch.get_attached_vnics():
                 dev = eswitch.get_dev_for_vnic(vnic_mac)
                 if dev:
-                    LOG.info(_LI("IB port for MAC %s doen't support "
-                             "port down"), vnic_mac)
+                    LOG.info("IB port for MAC %s doen't support "
+                             "port down", vnic_mac)
                 break
         if dev is None:
-            LOG.info(_LI("No device for MAC %s"), vnic_mac)
+            LOG.info("No device for MAC %s", vnic_mac)
 
     def set_vlan(self, fabric, vnic_mac, vlan):
         eswitches = self._get_eswitches_for_fabric(fabric)
@@ -213,7 +212,7 @@ class eSwitchHandler(object):
                             self._config_vlan_ib(fabric, dev, vlan)
                             return True
                         except RuntimeError:
-                            LOG.error(_LE('Set VLAN operation failed'))
+                            LOG.error('Set VLAN operation failed')
         return False
 
     def get_eswitch_tables(self, fabrics):
@@ -227,7 +226,7 @@ class eSwitchHandler(object):
                         'port_policy': eswitch.get_port_policy_matrix()
                     }
             else:
-                LOG.info(_LI("Get eswitch tables: No eswitch %s"), fabric)
+                LOG.info("Get eswitch tables: No eswitch %s", fabric)
         return tables
 
     def _get_eswitches_for_fabric(self, fabric):
@@ -283,8 +282,7 @@ class eSwitchHandler(object):
         elif (vf_device_type == constants.MLNX5_VF_DEVICE_TYPE):
             self._config_vf_mac_address_mlnx5(vguid, dev, pf_fabric_details)
         else:
-            LOG.error(_LE("Unsupported vf device type: %s "),
-                      vf_device_type)
+            LOG.error("Unsupported vf device type: %s ", vf_device_type)
 
     def _config_vf_mac_address_mlnx4(self, vguid, dev, pf_fabric_details):
         hca_port = pf_fabric_details['hca_port']
@@ -303,8 +301,8 @@ class eSwitchHandler(object):
             self._config_vf_pkey(
                 ppkey_idx, PARTIAL_PKEY_IDX, pf_mlx_dev, dev, hca_port)
         else:
-            LOG.error(_LE("Can't find partial management pkey for"
-                          "%(pf)s:%(dev)s"), {'pf': pf_mlx_dev, 'dev': dev})
+            LOG.error("Can't find partial management pkey for "
+                      "%(pf)s:%(dev)s", {'pf': pf_mlx_dev, 'dev': dev})
 
     def _config_vf_mac_address_mlnx5(self, vguid, dev, pf_fabric_details):
         vf_num = pf_fabric_details['vfs'][dev]['vf_num']
@@ -340,8 +338,7 @@ class eSwitchHandler(object):
         elif vf_device_type == constants.MLNX5_VF_DEVICE_TYPE:
             pass
         else:
-            LOG.error(_LE("Unsupported vf device type: %s "),
-                      vf_device_type)
+            LOG.error("Unsupported vf device type: %s ", vf_device_type)
 
     def _config_vlan_ib_mlnx4(self, vlan, pf_mlx_dev, dev, hca_port):
         if vlan == 0:

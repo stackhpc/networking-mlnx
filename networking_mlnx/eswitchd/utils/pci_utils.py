@@ -50,7 +50,7 @@ class pciUtils(object):
                     vfs_info[vf_pci] = {'vf_num': vf_num,
                                         'vf_device_type': vf_device_type}
         except Exception:
-            LOG.error(_LE("PCI device %s not found"), pf)
+            LOG.error("PCI device %s not found", pf)
         return vfs_info
 
     def get_dev_attr(self, attr_path):
@@ -80,8 +80,8 @@ class pciUtils(object):
                 elif device_type in constants.MLNX5_VF_DEVICE_TYPE_LIST:
                     device_vf_type = constants.MLNX5_VF_DEVICE_TYPE
                 else:
-                    raise Exception(_LE('device type %s is not '
-                                        'supported'), device_type)
+                    raise Exception(_LE('device type %s is not supported'),
+                                    device_type)
         except IOError:
             pass
         return device_vf_type

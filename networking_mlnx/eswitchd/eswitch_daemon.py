@@ -16,12 +16,12 @@
 
 import sys
 
-from networking_mlnx._i18n import _, _LE, _LI
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 import zmq
 
+from networking_mlnx._i18n import _
 from networking_mlnx.eswitchd.common import config
 from networking_mlnx.eswitchd.common import constants
 from networking_mlnx.eswitchd.eswitch_handler import eSwitchHandler
@@ -51,13 +51,12 @@ class MlxEswitchDaemon(object):
                     fabric, pf = entry.split(':')
                     fabrics.append((fabric, pf))
                 except ValueError:
-                    LOG.error(_LE("Invalid fabric: "
-                                "'%(entry)s' - "
-                                "Service terminated!"),
-                              locals())
+                    LOG.error("Invalid fabric: "
+                              "'%(entry)s' - "
+                              "Service terminated!", locals())
                     raise
             else:
-                LOG.error(_LE("Cannot parse Fabric Mappings"))
+                LOG.error("Cannot parse Fabric Mappings")
                 raise Exception(_("Cannot parse Fabric Mappings"))
         return fabrics
 
@@ -87,12 +86,12 @@ class MlxEswitchDaemon(object):
                 result = self.dispatcher.handle_msg(data)
                 msg = jsonutils.dumps(result)
             except Exception as e:
-                LOG.exception(_LE("Exception during message handling - %s"), e)
+                LOG.exception("Exception during message handling - %s", e)
                 msg = str(e)
             sender.send(msg)
 
     def daemon_loop(self):
-        LOG.info(_LI("Daemon Started!"))
+        LOG.info("Daemon Started!")
         polling_counter = 0
         while True:
             self._handle_msg()
@@ -111,8 +110,8 @@ def main():
         daemon = MlxEswitchDaemon()
         daemon.start()
     except Exception as e:
-        LOG.exception(_LE("Failed to start EswitchDaemon "
-                          "- Daemon terminated! %s"), e)
+        LOG.exception("Failed to start EswitchDaemon "
+                      "- Daemon terminated! %s", e)
         sys.exit(1)
 
     daemon.daemon_loop()

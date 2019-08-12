@@ -30,8 +30,8 @@ LOG = logging.getLogger(__name__)
 class EswitchUtils(object):
     def __init__(self, daemon_endpoint, timeout):
         if not zmq:
-            LOG.error(_LE("Failed to import eventlet.green.zmq. "
-                          "Won't connect to eSwitchD - exiting..."))
+            LOG.error("Failed to import eventlet.green.zmq. "
+                      "Won't connect to eSwitchD - exiting...")
             raise SystemExit(1)
         self.__conn = None
         self.daemon = daemon_endpoint

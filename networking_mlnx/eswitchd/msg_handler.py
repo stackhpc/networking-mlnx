@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from networking_mlnx._i18n import _, _LE, _LI
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
@@ -118,7 +117,7 @@ class GetVnics(BasicMessageHandler):
         fabric = self.msg['fabric']
         if fabric == '*':
             fabrics = eswitch_handler.eswitches.keys()
-            LOG.info(_LI("fabrics = %s"), fabrics)
+            LOG.info("fabrics = %s", fabrics)
         else:
             fabrics = [fabric]
         vnics = eswitch_handler.get_vnics(fabrics)
@@ -144,7 +143,7 @@ class PortRelease(BasicMessageHandler):
                 eswitch_handler.port_release(fabric, vnic_mac)
             except Exception:
                 reason = "port release failed"
-                LOG.exception(_LE("PortRelease failed"))
+                LOG.exception("PortRelease failed")
         if reason:
             return self.build_response(False, reason=reason)
         return self.build_response(True, response={})
@@ -199,7 +198,7 @@ class GetEswitchTables(BasicMessageHandler):
         fabric = self.msg.get('fabric', '*')
         if fabric == '*':
             fabrics = eswitch_handler.eswitches.keys()
-            LOG.info(_LI("fabrics = %s"), fabrics)
+            LOG.info("fabrics = %s", fabrics)
         else:
             fabrics = [fabric]
         response = {'tables': eswitch_handler.get_eswitch_tables(fabrics)}
@@ -221,7 +220,7 @@ class MessageDispatch(object):
         self.eswitch_handler = eswitch_handler
 
     def handle_msg(self, msg):
-        LOG.info(_LI("Handling message - %s"), msg)
+        LOG.info("Handling message - %s", msg)
         result = {}
         action = msg.pop('action')
 
@@ -230,10 +229,10 @@ class MessageDispatch(object):
             if msg_handler.validate():
                 result = msg_handler.execute(self.eswitch_handler)
             else:
-                LOG.error(_LE('Invalid message - cannot handle'))
+                LOG.error('Invalid message - cannot handle')
                 result = {'status': 'FAIL', 'reason': 'validation failed'}
         else:
-            LOG.error(_LE("Unsupported action - %s"), action)
+            LOG.error("Unsupported action - %s", action)
             result = {'action': action, 'status': 'FAIL',
                       'reason': 'unknown action'}
         result['action'] = action

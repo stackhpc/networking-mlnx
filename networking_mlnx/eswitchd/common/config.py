@@ -15,7 +15,6 @@
 
 import sys
 
-from networking_mlnx._i18n import _LI
 from oslo_config import cfg
 from oslo_log import log as logging
 
@@ -54,7 +53,7 @@ def init(args, **kwargs):
 def setup_logging():
     """Sets up the logging options for a log with supplied name."""
     logging.setup(cfg.CONF, 'eswitchd')
-    LOG.info(_LI("Logging enabled!"))
-    LOG.info(_LI("%(prog)s Started!"),
+    LOG.info("Logging enabled!")
+    LOG.info("%(prog)s Started!",
              {'prog': sys.argv[0]})
     LOG.debug("command line: %s", " ".join(sys.argv))

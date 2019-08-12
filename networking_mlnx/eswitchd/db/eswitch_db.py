@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from networking_mlnx._i18n import _LI
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
@@ -38,7 +37,7 @@ class eSwitchDB(object):
 
     def plug_nic(self, port_name):
         self.port_table[port_name]['state'] = constants.VPORT_STATE_ATTACHED
-        LOG.info(_LI("port table:"), self.port_table)
+        LOG.info("port table:", self.port_table)
 
     def get_port_state(self, dev):
         state = None
