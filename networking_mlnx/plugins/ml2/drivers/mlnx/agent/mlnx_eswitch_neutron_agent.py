@@ -18,8 +18,6 @@ import socket
 import sys
 import time
 
-import eventlet
-eventlet.monkey_patch()
 from neutron.agent import rpc as agent_rpc
 from neutron.agent import securitygroups_rpc as agent_sg_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
@@ -253,10 +251,10 @@ class MlnxEswitchNeutronAgent(object):
             # Either it's the first iteration or previous iteration had
             # problems.
             port_info['added'] = cur_ports
-            port_info['removed'] = ((previous['removed'] | previous['current'])
-                                    - cur_ports)
-            port_info['updated'] = ((previous['updated'] | updated_ports)
-                                    & cur_ports)
+            port_info['removed'] = ((previous['removed'] |
+                                    previous['current']) - cur_ports)
+            port_info['updated'] = ((previous['updated'] | updated_ports) &
+                                    cur_ports)
         else:
             # Shouldn't process updates for not existing ports
             port_info['added'] = cur_ports - previous['current']

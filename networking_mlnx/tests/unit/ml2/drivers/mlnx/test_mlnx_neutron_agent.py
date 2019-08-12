@@ -115,8 +115,10 @@ class TestEswitchAgent(base.BaseTestCase):
             mock.patch.object(self.agent.plugin_rpc,
                               'get_devices_details_list',
                               return_value=[details]),\
-            mock.patch.object(self.agent.plugin_rpc, 'update_device_up') as upd_dev_up,\
-            mock.patch.object(self.agent.plugin_rpc, 'update_device_down') as upd_dev_down,\
+            mock.patch.object(self.agent.plugin_rpc,
+                              'update_device_up') as upd_dev_up,\
+            mock.patch.object(self.agent.plugin_rpc,
+                              'update_device_down') as upd_dev_down,\
             mock.patch.object(self.agent, func_name) as func:
             self.assertFalse(self.agent.treat_devices_added_or_updated([{}]))
         return (func.called, upd_dev_up.called, upd_dev_down.called)

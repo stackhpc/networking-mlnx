@@ -50,11 +50,10 @@ class eSwitchHandler(object):
             verify_vendor_pf = (
                 self.pci_utils.verify_vendor_pf(pf, constants.VENDOR))
             if (not verify_vendor_pf or
-                    not self.pci_utils.is_sriov_pf(pf) or
-                    not self.pci_utils.is_ifc_module(pf)):
+                not self.pci_utils.is_sriov_pf(pf)):
                 LOG.error(_LE("PF %s must have Mellanox Vendor ID"
                           ",SR-IOV and driver module "
-                          "enabled. Terminating!") % pf)
+                          "enabled. Terminating!"), pf)
                 sys.exit(1)
 
             if self.eswitches.get(fabric) is None:
@@ -228,7 +227,7 @@ class eSwitchHandler(object):
                         'port_policy': eswitch.get_port_policy_matrix()
                     }
             else:
-                LOG.info(_LI("Get eswitch tables: No eswitch %s") % fabric)
+                LOG.info(_LI("Get eswitch tables: No eswitch %s"), fabric)
         return tables
 
     def _get_eswitches_for_fabric(self, fabric):

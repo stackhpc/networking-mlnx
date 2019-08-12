@@ -15,17 +15,17 @@
 # limitations under the License.
 
 import sys
-import zmq
 
 from networking_mlnx._i18n import _, _LE, _LI
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
+import zmq
 
 from networking_mlnx.eswitchd.common import config
 from networking_mlnx.eswitchd.common import constants
 from networking_mlnx.eswitchd.eswitch_handler import eSwitchHandler
-import networking_mlnx.eswitchd.msg_handler as message
+from networking_mlnx.eswitchd import msg_handler as message
 from networking_mlnx.eswitchd.utils.helper_utils import set_conn_url
 
 LOG = logging.getLogger(__name__)

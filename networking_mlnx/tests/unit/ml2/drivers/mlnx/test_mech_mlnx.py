@@ -134,7 +134,6 @@ class FakeContext(base.FakePortContext):
 
 class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
                                   test_plugin.Ml2PluginV2TestCase):
-                                # api_base.BaseNetworkTest):
     mechanism_drivers = ['mlnx_infiniband']
 
     def setUp(self):

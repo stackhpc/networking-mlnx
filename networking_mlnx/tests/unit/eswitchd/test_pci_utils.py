@@ -15,12 +15,10 @@
 # limitations under the License.
 
 import contextlib
+import subprocess
+
 import mock
 import six
-import subprocess
-import sys
-
-sys.modules['ethtool'] = mock.Mock()
 
 from networking_mlnx._i18n import _LE
 from networking_mlnx.eswitchd.utils import pci_utils
