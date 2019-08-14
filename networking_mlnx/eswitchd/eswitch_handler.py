@@ -163,14 +163,12 @@ class eSwitchHandler(object):
         for eswitch in eswitches:
             if eswitch and vnic_mac in eswitch.get_attached_vnics():
                 dev = eswitch.get_dev_for_vnic(vnic_mac)
-                break
-        if dev:
-            if (eswitch.get_port_state(dev) ==
+                if (dev is not None and eswitch.get_port_state(dev) ==
                     constants.VPORT_STATE_UNPLUGGED):
-                ret = self.set_vlan(
-                    fabric, vnic_mac, constants.UNTAGGED_VLAN_ID)
-                self.port_down(fabric, vnic_mac)
-            eswitch.port_release(vnic_mac)
+                    ret = self.set_vlan(
+                        fabric, vnic_mac, constants.UNTAGGED_VLAN_ID)
+                    self.port_down(fabric, vnic_mac)
+                eswitch.port_release(vnic_mac)
         return ret
 
     def port_up(self, fabric, vnic_mac):
@@ -219,14 +217,15 @@ class eSwitchHandler(object):
         tables = {}
         for fabric in fabrics:
             eswitches = self._get_eswitches_for_fabric(fabric)
+            if len(eswitches) == 0:
+                LOG.info("Get eswitch tables: No eswitch %s", fabric)
+                continue
             for eswitch in eswitches:
                 if eswitch:
                     tables[fabric] = {
                         'port_table': eswitch.get_port_table_matrix(),
                         'port_policy': eswitch.get_port_policy_matrix()
                     }
-            else:
-                LOG.info("Get eswitch tables: No eswitch %s", fabric)
         return tables
 
     def _get_eswitches_for_fabric(self, fabric):

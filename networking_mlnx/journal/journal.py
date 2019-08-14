@@ -216,7 +216,7 @@ class SdnJournalThread(object):
                                        'status': job_status})
                             db.update_db_row_state(
                                 session, row, sdn_const.PENDING)
-                    except ValueError or AttributeError:
+                    except (ValueError, AttributeError):
                         LOG.error("failed to extract response for job"
                                   "id %s", row.job_id)
                 else:

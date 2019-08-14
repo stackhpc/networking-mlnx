@@ -28,8 +28,7 @@ class BaseException(Exception):
         except Exception as e:
             if _FATAL_EXCEPTION_FORMAT_ERRORS:
                 raise e
-            else:
-                self._error_string = self.message
+            self._error_string = self.message
 
     def __str__(self):
         return self._error_string
