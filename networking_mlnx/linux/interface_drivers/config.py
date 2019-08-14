@@ -21,5 +21,17 @@ interface_driver_opts = [
     cfg.StrOpt('ipoib_physical_interface',
            default="ib0",
            help=_("Name of the IPoIB root device to use with"
-                  "ipoib interface driver."))
+                  "ipoib interface driver.")),
+    cfg.StrOpt('multi_interface_driver_mappings',
+               default=None,
+               help=_("A per physnet interface driver mapping used by "
+                      "multidriver interface driver to manage the virtual "
+                      "interface per physnet. a virtual network e.g vxlan "
+                      "will map to the 'nil' physnet.")),
+    cfg.BoolOpt('enable_multi_interface_driver_cache_maintenance',
+                default=False,
+                help=_("Enable periodic job to perform maintenance to the"
+                       "embedded network cache for multi interface driver. "
+                       "Set to true if a multi interface driver instance will "
+                       "be active for an extended amount of time."))
 ]
