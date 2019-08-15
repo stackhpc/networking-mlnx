@@ -65,4 +65,15 @@ sdn_opts = [
                 help=_("Comma-separated list of <physical_network> "
                        "that it will send notification. * "
                        "means all physical_networks")),
+        cfg.BoolOpt('bind_normal_ports',
+                    default=False,
+                    help=_("Allow the binding of normal ports for ports "
+                           "associated with a physnet from "
+                           "bind_normal_ports_physnets.")),
+        cfg.ListOpt('bind_normal_ports_physnets',
+                    default=[],
+                    help=_("A list of physnets in which binding of normal "
+                           "ports is allowed. This option is used in "
+                           "conjuction with bind_normal_ports. "
+                           "The list must be a subset of physical_networks")),
 ]

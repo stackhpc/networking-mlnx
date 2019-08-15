@@ -23,3 +23,7 @@ class SDNConnectionError(exc.NeutronException):
 
 class SDNLoginError(exc.NeutronException):
     message = _("Failed login to URL: %(login_url)s %(msg)s")
+
+
+class SDNDriverConfError(exc.NeutronException):
+    message = _("Driver configuration error: %(msg)s")
