@@ -87,6 +87,15 @@ class NetworkCache(SimpleCache):
         if self.network_fields and 'id' not in self.network_fields:
             self.network_fields.append('id')
 
+    def _get_no_callback(self, network_id):
+        """Get network from cache
+        in case of a cache miss, return None.
+
+        :param network_id: network id
+        :return: network dict or None
+        """
+        return super(NetworkCache, self).get(network_id)
+
     def get(self, network_id):
         """Get network from cache
         in case of a cache miss, attempt to get network from callback.
@@ -94,7 +103,7 @@ class NetworkCache(SimpleCache):
         :param network_id: network id
         :return: network dict
         """
-        net = super(NetworkCache, self).get(network_id)
+        net = self._get_no_callback(network_id)
         if net is None:
             LOG.debug("Network %s not in cache, fetching via callback.",
                       network_id)
@@ -148,13 +157,22 @@ class SafeNetworkCache(NetworkCache):
         self.__rw_lock = lockutils.ReaderWriterLock()
 
     def get(self, id):
-        """Get object from cache
+        """Get network from cache
+        in case of a cache miss, attempt to get network from callback.
 
-        :param id: object id
-        :return: object
+        :param id: network id
+        :return: network dict
         """
         with self.__rw_lock.read_lock():
-            return super(SafeNetworkCache, self).get(id)
+            net = self._get_no_callback(id)
+
+        if net is None:
+            LOG.debug("Network %s not in cache, fetching via callback.", id)
+            net = self.get_networks_cb(filters={'id': [id]},
+                                       fields=self.network_fields)[0]
+            # Put operation is already protected by a writer lock
+            self.put(net['id'], net)
+        return net
 
     def get_all(self):
         """Get all object from cache

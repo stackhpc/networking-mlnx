@@ -151,3 +151,9 @@ class TestSafeNetworkCache(TestNetworkCache):
     def test_refresh(self):
         self.cache.refresh()
         self.assertTrue(self.rw_lock_mock.write_lock.called)
+
+    def test_cache_miss_with_real_lock(self):
+        # re-instantiate cache with a real lock
+        self.cache = self.cache = network_cache.SafeNetworkCache(
+                self.cb_mock, ['attrA', 'attrB'])
+        self.test_get_with_miss()
