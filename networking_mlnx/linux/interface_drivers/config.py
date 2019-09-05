@@ -29,7 +29,7 @@ interface_driver_opts = [
                       "interface per physnet. a virtual network e.g vxlan "
                       "will map to the 'nil' physnet.")),
     cfg.BoolOpt('enable_multi_interface_driver_cache_maintenance',
-                default=False,
+                default=True,
                 help=_("Enable periodic job to perform maintenance to the"
                        "embedded network cache for multi interface driver. "
                        "Set to true if a multi interface driver instance will "
