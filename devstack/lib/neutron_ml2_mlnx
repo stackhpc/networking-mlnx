@@ -79,9 +79,6 @@ function init_neutron_ml2_mlnx {
 
 # install_neutron_ml2_mlnx() - Collect source and prepare
 function install_neutron_ml2_mlnx {
-    if is_service_enabled eswitchd; then
-        install_eswitchd
-    fi
     setup_develop $DEST/neutron_ml2_mlnx
 }
 

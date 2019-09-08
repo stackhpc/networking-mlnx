@@ -50,8 +50,7 @@ class eSwitchHandler(object):
             verify_vendor_pf = (
                 self.pci_utils.verify_vendor_pf(pf, constants.VENDOR))
             if (not verify_vendor_pf or
-                    not self.pci_utils.is_sriov_pf(pf) or
-                    not self.pci_utils.is_ifc_module(pf)):
+                    not self.pci_utils.is_sriov_pf(pf)):
                 LOG.error(_LE("PF %s must have Mellanox Vendor ID"
                           ",SR-IOV and driver module "
                           "enabled. Terminating!") % pf)
