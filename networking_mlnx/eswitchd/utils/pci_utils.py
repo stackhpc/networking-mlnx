@@ -16,13 +16,10 @@ import glob
 import os
 import re
 
-import ethtool
-from oslo_concurrency import processutils
 from oslo_log import log as logging
 
-from networking_mlnx._i18n import _LE, _LW
+from networking_mlnx._i18n import _LE
 from networking_mlnx.eswitchd.common import constants
-from networking_mlnx.eswitchd.utils import command_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -96,28 +93,6 @@ class pciUtils(object):
             return True
         else:
             return
-
-    def get_interface_type(self, ifc):
-        cmd = ['ip', '-o', 'link', 'show', 'dev', ifc]
-        try:
-            out, err = command_utils.execute(*cmd)
-        except (processutils.ProcessExecutionError, OSError) as e:
-            LOG.warning(_LW("Failed to execute command %(cmd)s due to %(e)s"),
-                    {"cmd": cmd, "e": e})
-            raise
-        if out.find('link/ether') != -1:
-            return 'eth'
-        elif out.find('link/infiniband') != -1:
-            return 'ib'
-        else:
-            return None
-
-    def is_ifc_module(self, ifc):
-        if 'ipoib' in ethtool.get_module(ifc):
-            return True
-
-    def filter_ifcs_module(self, ifcs):
-        return [ifc for ifc in ifcs if self.is_ifc_module(ifc)]
 
     def get_pf_mlx_dev(self, pf):
         dev_path = (
