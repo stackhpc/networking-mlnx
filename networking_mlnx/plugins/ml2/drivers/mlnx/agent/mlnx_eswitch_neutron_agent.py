@@ -104,10 +104,6 @@ class EswitchManager(object):
             LOG.info('Binding Segmentation ID %(seg_id)s '
                      'to eSwitch for vNIC mac_address %(mac)s',
                      {'seg_id': seg_id, 'mac': port_mac})
-            self.utils.set_port_vlan_id(physical_network,
-                                        seg_id,
-                                        port_mac)
-
         elif network_type == constants.TYPE_FLAT:
             LOG.info('Binding eSwitch for vNIC mac_address %(mac)s'
                      'to flat network', {'mac': port_mac})
