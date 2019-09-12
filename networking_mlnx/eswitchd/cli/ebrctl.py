@@ -27,9 +27,9 @@ def parse():
     """Main method that manages supported CLI commands.
 
     The actions that are supported throught the CLI are:
-    write-sys, del-port, allocate-port and add-port
+    del-port, allocate-port and add-port
     Each action is matched with method that should handle it
-    e.g. write-sys action is matched with  write_sys method
+    e.g. del-port action is matched with del_port method
     """
 
     parser = argparse.ArgumentParser(prog='ebrctl')
@@ -51,11 +51,6 @@ def parse():
     parser_del_port.set_defaults(func=del_port)
     parser_del_port.add_argument('fabric')
     parser_del_port.add_argument('vnic_mac')
-
-    parser_write_sys = subparsers.add_parser('write-sys')
-    parser_write_sys.set_defaults(func=write_sys)
-    parser_write_sys.add_argument('path')
-    parser_write_sys.add_argument('value')
 
     args = parser.parse_args()
     args.func(args)
@@ -79,18 +74,6 @@ def del_port(args):
         client.deallocate_nic(args.vnic_mac, args.fabric)
     except exceptions.MlxException as e:
         sys.stderr.write("Error in del-port command")
-        sys.stderr.write(e.message)
-        sys.exit(1)
-    sys.exit(0)
-
-
-def write_sys(args):
-    try:
-        fd = open(args.path, 'w')
-        fd.write(args.value)
-        fd.close()
-    except Exception as e:
-        sys.stderr.write("Error in write-sys command")
         sys.stderr.write(e.message)
         sys.exit(1)
     sys.exit(0)
