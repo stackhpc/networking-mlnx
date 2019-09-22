@@ -30,6 +30,7 @@ class DeviceDB(object):
         pf_details['pf_device_type'] = None
         pf_details['hca_port'] = hca_port
         pf_details['pf_mlx_dev'] = pf_mlx_dev
+        pf_details['pf_net_dev'] = pf
         if self.device_db.get(fabric) is None:
             self.device_db[fabric] = {pf: pf_details}
         else:

@@ -35,8 +35,6 @@ MLNX5_GUID_NODE_PATH = ('/sys/class/infiniband/%(module)s/device/sriov/'
                       '%(vf_num)s/node')
 MLNX5_GUID_PORT_PATH = ('/sys/class/infiniband/%(module)s/device/sriov/'
                       '%(vf_num)s/port')
-MLNX5_GUID_POLICY_PATH = ('/sys/class/infiniband/%(module)s/device/sriov/'
-                        '%(vf_num)s/policy')
 UNBIND_PATH = '/sys/bus/pci/drivers/mlx5_core/unbind'
 BIND_PATH = '/sys/bus/pci/drivers/mlx5_core/bind'
 

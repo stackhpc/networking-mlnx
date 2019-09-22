@@ -21,8 +21,9 @@ from oslo_log import log as logging
 from networking_mlnx.eswitchd.common import constants
 from networking_mlnx.eswitchd.db import eswitch_db
 from networking_mlnx.eswitchd.resource_mngr import ResourceManager
-from networking_mlnx.eswitchd.utils import command_utils
 from networking_mlnx.eswitchd.utils import pci_utils
+from networking_mlnx.internal.netdev_ops import api as net_dev_api
+from networking_mlnx.internal.netdev_ops import constants as netdev_const
 from networking_mlnx.internal.sys_ops import api as sys_api
 
 
@@ -77,6 +78,9 @@ class eSwitchHandler(object):
 
     def _add_fabric(self, fabric, pf):
         self.rm.add_fabric(fabric, pf)
+        # TODO(adrianc): eswitch service should not need to set PF netdev
+        # link state. This should be handled during deployment. In the furure,
+        # consider removing _config_port_up.
         self._config_port_up(pf)
         pf_fabric_details = self.rm.get_fabric_details(fabric, pf)
         eswitches = self._get_eswitches_for_fabric(fabric)
@@ -286,13 +290,22 @@ class eSwitchHandler(object):
     def _config_vf_mac_address_mlnx4(self, vguid, dev, pf_fabric_details):
         hca_port = pf_fabric_details['hca_port']
         pf_mlx_dev = pf_fabric_details['pf_mlx_dev']
+        pf_net_dev = pf_fabric_details['pf_net_dev']
+        vf_num = pf_fabric_details['vfs'][dev]['vf_num']
+
         self._config_vf_pkey(
             INVALID_PKEY, DEFAULT_PKEY_IDX, pf_mlx_dev, dev, hca_port)
 
-        guid_idx = self._get_guid_idx(pf_mlx_dev, dev, hca_port)
-        path = constants.MLNX4_ADMIN_GUID_PATH % (
-            pf_mlx_dev, hca_port, guid_idx)
-        sys_api.sys_write(path, vguid)
+        try:
+            net_dev_api.set_vf_guid(pf_net_dev, int(vf_num), vguid)
+        except Exception as e:
+            LOG.info("Failed to set vf guid via netlink. "
+                     "%s, attempting to set vf guid via sysfs", str(e))
+            guid_idx = self._get_guid_idx(pf_mlx_dev, dev, hca_port)
+            path = constants.MLNX4_ADMIN_GUID_PATH % (
+                pf_mlx_dev, hca_port, guid_idx)
+            sys_api.sys_write(path, vguid)
+
         ppkey_idx = self._get_pkey_idx(
             int(DEFAULT_PKEY, 16), pf_mlx_dev, hca_port)
         if ppkey_idx >= 0:
@@ -305,21 +318,28 @@ class eSwitchHandler(object):
     def _config_vf_mac_address_mlnx5(self, vguid, dev, pf_fabric_details):
         vf_num = pf_fabric_details['vfs'][dev]['vf_num']
         pf_mlx_dev = pf_fabric_details['pf_mlx_dev']
-        guid_node = constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
-                                                      'vf_num': vf_num}
-        guid_port = constants.MLNX5_GUID_PORT_PATH % {'module': pf_mlx_dev,
-                                                      'vf_num': vf_num}
-        guid_poliy = constants.MLNX5_GUID_POLICY_PATH % {'module': pf_mlx_dev,
-                                                         'vf_num': vf_num}
-        for path in (guid_node, guid_port):
-            sys_api.sys_write(path, vguid)
+        pf_net_dev = pf_fabric_details['pf_net_dev']
+
+        try:
+            net_dev_api.set_vf_guid(pf_net_dev, int(vf_num), vguid)
+        except Exception as e:
+            LOG.info("Failed to set vf guid via netlink. "
+                     "%s, attempting to set vf guid via sysfs", str(e))
+            guid_node = constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
+                                                          'vf_num': vf_num}
+            guid_port = constants.MLNX5_GUID_PORT_PATH % {'module': pf_mlx_dev,
+                                                          'vf_num': vf_num}
+            for path in (guid_node, guid_port):
+                sys_api.sys_write(path, vguid)
 
         if vguid == constants.MLNX5_INVALID_GUID:
-            sys_api.sys_write(guid_poliy, 'Down')
+            net_dev_api.set_vf_admin_state(
+                pf_net_dev, int(vf_num), netdev_const.ADMIN_STATE_DOWN)
             sys_api.sys_write(constants.UNBIND_PATH, dev)
             sys_api.sys_write(constants.BIND_PATH, dev)
         else:
-            sys_api.sys_write(guid_poliy, 'Up')
+            net_dev_api.set_vf_admin_state(
+                pf_net_dev, int(vf_num), netdev_const.ADMIN_STATE_UP)
 
     def _config_vlan_ib(self, fabric, dev, vlan):
         pf_fabric_details = self._get_pf_fabric(fabric, dev)
@@ -363,8 +383,7 @@ class eSwitchHandler(object):
         return None
 
     def _config_port_up(self, dev):
-        cmd = ['ip', 'link', 'set', dev, 'up']
-        command_utils.execute(*cmd)
+        net_dev_api.set_link_state(dev, netdev_const.LINK_STATE_UP)
 
     def _get_pf_fabric(self, fabric, dev):
         fabric_details = self.rm.get_fabric_details(fabric)
