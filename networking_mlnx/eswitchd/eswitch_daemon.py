@@ -105,7 +105,6 @@ class MlxEswitchDaemon(object):
 
 def main():
     config.init(sys.argv[1:])
-    config.setup_logging()
     try:
         daemon = MlxEswitchDaemon()
         daemon.start()

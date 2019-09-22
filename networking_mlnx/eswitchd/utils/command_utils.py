@@ -14,19 +14,15 @@
 # limitations under the License.
 
 from oslo_concurrency import processutils
-from oslo_config import cfg
 from oslo_log import log as logging
 
+from networking_mlnx.eswitchd.common import config
+
 LOG = logging.getLogger(__name__)
-
-
-def get_root_helper():
-    root_helper = 'sudo neutron-rootwrap %s' % cfg.CONF.DAEMON.rootwrap_conf
-    return root_helper
 
 
 def execute(*cmd, **kwargs):
     if kwargs.get('root_helper') is None:
         kwargs['run_as_root'] = True
-        kwargs['root_helper'] = get_root_helper()
+        kwargs['root_helper'] = config.get_root_helper()
     return processutils.execute(*cmd, **kwargs)

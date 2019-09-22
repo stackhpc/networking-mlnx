@@ -13,10 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import shlex
 import sys
 
+from neutron.conf.agent import common as common_conf
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_privsep import priv_context
 
 LOG = logging.getLogger(__name__)
 DEFAULT_INTERFACE_MAPPINGS = []
@@ -35,25 +38,40 @@ mlx_daemon_opts = [
                default=5,
                help=('Daemon will do sync after max_polling_count '
                      '* default_timeout')),
-    cfg.StrOpt('rootwrap_conf',
-               default='/etc/neutron/rootwrap.conf',
-               help=('rootwrap configuration file'))
 ]
 
 
-cfg.CONF.register_opts(mlx_daemon_opts, "DAEMON")
-logging.register_options(cfg.CONF)
+def register_mlnx_daemon_opts(conf=cfg.CONF):
+    conf.register_opts(mlx_daemon_opts, "DAEMON")
+
+
+def register_opts(conf=cfg.CONF):
+    # NOTE(adrianc) Logging opts are registered during import of
+    # common_conf module.
+    common_conf.register_root_helper(conf)
+    register_mlnx_daemon_opts(conf)
+
+
+def setup_logging(conf=cfg.CONF):
+    """Sets up the logging options for a log with supplied name."""
+    logging.setup(conf, 'eswitchd')
+    LOG.info("Logging enabled!")
+    LOG.info("%(prog)s Started!",
+             {'prog': sys.argv[0]})
+    LOG.debug("command line: %s", " ".join(sys.argv))
+
+
+def get_root_helper(conf=cfg.CONF):
+    return conf.AGENT.root_helper
+
+
+def setup_privsep(conf=cfg.CONF):
+    priv_context.init(root_helper=shlex.split(get_root_helper(conf)))
 
 
 def init(args, **kwargs):
     cfg.CONF(args=args, project='eswitchd',
              **kwargs)
-
-
-def setup_logging():
-    """Sets up the logging options for a log with supplied name."""
-    logging.setup(cfg.CONF, 'eswitchd')
-    LOG.info("Logging enabled!")
-    LOG.info("%(prog)s Started!",
-             {'prog': sys.argv[0]})
-    LOG.debug("command line: %s", " ".join(sys.argv))
+    register_opts(cfg.CONF)
+    setup_logging(cfg.CONF)
+    setup_privsep(cfg.CONF)

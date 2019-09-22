@@ -2,5 +2,8 @@
 # This file should be owned by (and only-writeable by) the root user
 
 [Filters]
-sh: RegExpFilter, /bin/sh, root, sh, -c, echo .* > .*
-
+# oslo.privsep default networking_mlnx context
+privsep: PathFilter, privsep-helper, root,
+ --config-file, /etc/(?!\.\.).*,
+ --privsep_context, networking_mlnx.privsep.admin_pctx,
+ --privsep_sock_path, /tmp/.*

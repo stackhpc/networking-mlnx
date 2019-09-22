@@ -33,6 +33,7 @@ set +o xtrace
 # Set up default directories
 MLNX_AGENT_BINARY="$NEUTRON_BIN_DIR/neutron-mlnx-agent"
 
+source ${TOP_DIR}/lib/neutron
 source ${DEST}/neutron_ml2_mlnx/devstack/lib/eswitchd
 
 # Entry Points
@@ -83,7 +84,7 @@ function start_neutron_ml2_mlnx {
         start_eswitchd
     fi
     if is_service_enabled mlnx-agt; then
-        run_process mlnx-agt "$MLNX_AGENT_BINARY --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini"
+        run_process mlnx-agt "$MLNX_AGENT_BINARY --config-file ${NEUTRON_CONF} --config-file ${NEUTRON_CORE_PLUGIN_CONF}"
     fi
     sleep 10
 }

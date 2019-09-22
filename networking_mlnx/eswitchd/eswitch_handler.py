@@ -22,8 +22,8 @@ from networking_mlnx.eswitchd.common import constants
 from networking_mlnx.eswitchd.db import eswitch_db
 from networking_mlnx.eswitchd.resource_mngr import ResourceManager
 from networking_mlnx.eswitchd.utils import command_utils
-from networking_mlnx.eswitchd.utils import helper_utils
 from networking_mlnx.eswitchd.utils import pci_utils
+from networking_mlnx.internal.sys_ops import api as sys_api
 
 
 LOG = logging.getLogger(__name__)
@@ -245,7 +245,7 @@ class eSwitchHandler(object):
                         pf_mlx_dev, vf_pci_id, hca_port):
         path = constants.MLNX4_PKEY_INDEX_PATH % (pf_mlx_dev, vf_pci_id,
                                                   hca_port, pkey_idx)
-        helper_utils.sys_write(path, ppkey_idx)
+        sys_api.sys_write(path, ppkey_idx)
 
     def _get_guid_idx(self, pf_mlx_dev, dev, hca_port):
         path = constants.MLNX4_GUID_INDEX_PATH % (pf_mlx_dev, dev, hca_port)
@@ -292,7 +292,7 @@ class eSwitchHandler(object):
         guid_idx = self._get_guid_idx(pf_mlx_dev, dev, hca_port)
         path = constants.MLNX4_ADMIN_GUID_PATH % (
             pf_mlx_dev, hca_port, guid_idx)
-        helper_utils.sys_write(path, vguid)
+        sys_api.sys_write(path, vguid)
         ppkey_idx = self._get_pkey_idx(
             int(DEFAULT_PKEY, 16), pf_mlx_dev, hca_port)
         if ppkey_idx >= 0:
@@ -312,14 +312,14 @@ class eSwitchHandler(object):
         guid_poliy = constants.MLNX5_GUID_POLICY_PATH % {'module': pf_mlx_dev,
                                                          'vf_num': vf_num}
         for path in (guid_node, guid_port):
-            helper_utils.sys_write(path, vguid)
+            sys_api.sys_write(path, vguid)
 
         if vguid == constants.MLNX5_INVALID_GUID:
-            helper_utils.sys_write(guid_poliy, 'Down')
-            helper_utils.sys_write(constants.UNBIND_PATH, dev)
-            helper_utils.sys_write(constants.BIND_PATH, dev)
+            sys_api.sys_write(guid_poliy, 'Down')
+            sys_api.sys_write(constants.UNBIND_PATH, dev)
+            sys_api.sys_write(constants.BIND_PATH, dev)
         else:
-            helper_utils.sys_write(guid_poliy, 'Up')
+            sys_api.sys_write(guid_poliy, 'Up')
 
     def _config_vlan_ib(self, fabric, dev, vlan):
         pf_fabric_details = self._get_pf_fabric(fabric, dev)

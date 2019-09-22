@@ -24,6 +24,7 @@
 MY_XTRACE=$(set +o | grep xtrace)
 set +o xtrace
 
+source ${TOP_DIR}/lib/neutron
 
 ESWITCHD_DIR=$DEST/neutron_ml2_mlnx
 ESWITCHD_BIN_DIR=$(get_python_exec_prefix)
@@ -52,7 +53,7 @@ function init_eswitchd {
 }
 
 function start_eswitchd {
-    run_process eswitchd "${ESWITCHD_BIN_DIR}/eswitchd --config-file $ESWITCHD_CONF_FILE"
+    run_process eswitchd "${ESWITCHD_BIN_DIR}/eswitchd --config-file $NEUTRON_CONF --config-file $ESWITCHD_CONF_FILE"
 }
 
 function stop_eswitchd {
