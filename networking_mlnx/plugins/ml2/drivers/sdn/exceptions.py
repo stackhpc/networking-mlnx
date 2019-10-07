@@ -27,3 +27,7 @@ class SDNLoginError(exc.NeutronException):
 
 class SDNDriverConfError(exc.NeutronException):
     message = _("Driver configuration error: %(msg)s")
+
+
+class SDNDriverCertError(exc.NeutronException):
+    message = _("SSL certificate error: %(msg)s")
