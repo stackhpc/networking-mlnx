@@ -28,10 +28,10 @@ class pciUtils(object):
 
     ETH_PATH = "/sys/class/net/%(interface)s"
     ETH_DEV = ETH_PATH + "/device"
+    ETH_DRIVER = ETH_DEV + "/driver"
     ETH_PORT = ETH_PATH + "/dev_id"
     INFINIBAND_PATH = 'device/infiniband'
     VENDOR_PATH = ETH_DEV + '/vendor'
-    DEVICE_TYPE_PATH = ETH_DEV + '/virtfn%(vf_num)s/device'
     _VIRTFN_RE = re.compile(r'virtfn(?P<vf_num>\d+)')
     VFS_PATH = ETH_DEV + "/virtfn*"
 
@@ -46,7 +46,7 @@ class pciUtils(object):
                     dev_file = os.path.join(dev_path, dev_filename)
                     vf_pci = os.readlink(dev_file).strip("./")
                     vf_num = result.group('vf_num')
-                    vf_device_type = self.get_vf_device_type(pf, vf_num)
+                    vf_device_type = self.get_pf_device_type(pf)
                     vfs_info[vf_pci] = {'vf_num': vf_num,
                                         'vf_device_type': vf_device_type}
         except Exception:
@@ -67,24 +67,22 @@ class pciUtils(object):
         else:
             return False
 
-    def get_vf_device_type(self, pf, vf_num):
-        device_vf_type = None
-        device_type_file = pciUtils.DEVICE_TYPE_PATH % {'interface': pf,
-                                                        'vf_num': vf_num}
+    def get_pf_device_type(self, pf):
+        device_type = None
         try:
-            with open(device_type_file, 'r') as fd:
-                device_type = fd.read()
-                device_type = device_type.strip(os.linesep)
-                if device_type in constants.MLNX4_VF_DEVICE_TYPE_LIST:
-                    device_vf_type = constants.MLNX4_VF_DEVICE_TYPE
-                elif device_type in constants.MLNX5_VF_DEVICE_TYPE_LIST:
-                    device_vf_type = constants.MLNX5_VF_DEVICE_TYPE
-                else:
-                    raise Exception(_LE('device type %s is not supported'),
-                                    device_type)
+            driver_type = os.readlink(self.ETH_DRIVER
+                                      % {'interface': pf})
+            driver_type = os.path.basename(driver_type)
+            if driver_type == constants.MLNX4_DRIVER_TYPE:
+                device_type = constants.MLNX4_DEVICE_TYPE
+            elif driver_type == constants.MLNX5_DRIVER_TYPE:
+                device_type = constants.MLNX5_DEVICE_TYPE
+            else:
+                raise Exception(_LE('driver type %s is not supported'),
+                                driver_type)
         except IOError:
             pass
-        return device_vf_type
+        return device_type
 
     def is_sriov_pf(self, pf):
         vfs_path = pciUtils.VFS_PATH % {'interface': pf}
@@ -121,10 +119,10 @@ class pciUtils(object):
         macs_map = {}
         for pf_fabric_details in fabric_details.values():
             if (pf_fabric_details['pf_device_type'] ==
-                constants.MLNX4_VF_DEVICE_TYPE):
+                constants.MLNX4_DEVICE_TYPE):
                 macs_map.update(self.get_vfs_macs_ib_mlnx4(pf_fabric_details))
             elif (pf_fabric_details['pf_device_type'] ==
-                  constants.MLNX5_VF_DEVICE_TYPE):
+                  constants.MLNX5_DEVICE_TYPE):
                 macs_map.update(self.get_vfs_macs_ib_mlnx5(pf_fabric_details))
         return macs_map
 

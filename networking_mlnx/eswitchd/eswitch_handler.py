@@ -259,7 +259,7 @@ class eSwitchHandler(object):
 
     def _get_guid_from_mac(self, mac, device_type):
         guid = None
-        if device_type == constants.MLNX4_VF_DEVICE_TYPE:
+        if device_type == constants.MLNX4_DEVICE_TYPE:
             if mac is None:
                 guid = constants.MLNX4_INVALID_GUID
             else:
@@ -267,7 +267,7 @@ class eSwitchHandler(object):
                 prefix = mac[:6]
                 suffix = mac[6:]
                 guid = prefix + '0000' + suffix
-        elif (device_type == constants.MLNX5_VF_DEVICE_TYPE):
+        elif (device_type == constants.MLNX5_DEVICE_TYPE):
             if mac is None:
                 guid = constants.MLNX5_INVALID_GUID
             else:
@@ -280,9 +280,9 @@ class eSwitchHandler(object):
         pf_fabric_details = self._get_pf_fabric(fabric, dev)
         vf_device_type = pf_fabric_details['vfs'][dev]['vf_device_type']
         vguid = self._get_guid_from_mac(vnic_mac, vf_device_type)
-        if vf_device_type == constants.MLNX4_VF_DEVICE_TYPE:
+        if vf_device_type == constants.MLNX4_DEVICE_TYPE:
             self._config_vf_mac_address_mlnx4(vguid, dev, pf_fabric_details)
-        elif (vf_device_type == constants.MLNX5_VF_DEVICE_TYPE):
+        elif (vf_device_type == constants.MLNX5_DEVICE_TYPE):
             self._config_vf_mac_address_mlnx5(vguid, dev, pf_fabric_details)
         else:
             LOG.error("Unsupported vf device type: %s ", vf_device_type)
@@ -346,9 +346,9 @@ class eSwitchHandler(object):
         hca_port = pf_fabric_details['hca_port']
         pf_mlx_dev = pf_fabric_details['pf_mlx_dev']
         vf_device_type = pf_fabric_details['vfs'][dev]['vf_device_type']
-        if vf_device_type == constants.MLNX4_VF_DEVICE_TYPE:
+        if vf_device_type == constants.MLNX4_DEVICE_TYPE:
             self._config_vlan_ib_mlnx4(vlan, pf_mlx_dev, dev, hca_port)
-        elif vf_device_type == constants.MLNX5_VF_DEVICE_TYPE:
+        elif vf_device_type == constants.MLNX5_DEVICE_TYPE:
             pass
         else:
             LOG.error("Unsupported vf device type: %s ", vf_device_type)
