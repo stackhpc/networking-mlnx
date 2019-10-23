@@ -21,6 +21,7 @@ from oslo_config import fixture as fixture_config
 from networking_mlnx.plugins.ml2.drivers.sdn import client
 from networking_mlnx.plugins.ml2.drivers.sdn import config
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
+from networking_mlnx.plugins.ml2.drivers.sdn import exceptions
 from networking_mlnx.tests import base
 
 
@@ -52,6 +53,30 @@ class TestClient(base.TestCase):
                                      group=sdn_const.GROUP_OPT)
             self.assertRaises(cfg.NoSuchOptError,
                               client.SdnRestClient.create_client)
+
+    def test_cert_verify_default(self):
+        test_client = client.SdnRestClient.create_client()
+        self.assertEqual(True, test_client.verify)
+
+    def test_cert_verify_true(self):
+        self.conf_fixture.config(cert_verify=True,
+                                 group=sdn_const.GROUP_OPT)
+        test_client = client.SdnRestClient.create_client()
+        self.assertEqual(True, test_client.verify)
+
+    def test_cert_verify_false(self):
+        self.conf_fixture.config(cert_verify=False,
+                                 group=sdn_const.GROUP_OPT)
+        test_client = client.SdnRestClient.create_client()
+        self.assertEqual(False, test_client.verify)
+
+    def test_cert_verify_cert_not_found(self):
+        self.conf_fixture.config(cert_verify=True,
+                                 group=sdn_const.GROUP_OPT)
+        self.conf_fixture.config(cert_path="/Dummy.ca-bundle",
+                                 group=sdn_const.GROUP_OPT)
+        self.assertRaises(exceptions.SDNDriverCertError,
+                          client.SdnRestClient.create_client)
 
     @mock.patch('networking_mlnx.plugins.ml2.drivers.'
                 'sdn.client.SdnRestClient.request')

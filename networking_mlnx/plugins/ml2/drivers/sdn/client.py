@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import os
+
 from oslo_config import cfg
 from oslo_log import log
 from oslo_serialization import jsonutils
@@ -38,9 +40,12 @@ class SdnRestClient(object):
             cfg.CONF.sdn.domain,
             cfg.CONF.sdn.username,
             cfg.CONF.sdn.password,
-            cfg.CONF.sdn.timeout)
+            cfg.CONF.sdn.timeout,
+            cfg.CONF.sdn.cert_verify,
+            cfg.CONF.sdn.cert_path)
 
-    def __init__(self, url, domain, username, password, timeout):
+    def __init__(self, url, domain, username, password, timeout,
+                 verify, cert_path):
         self.url = url
         self.domain = domain
         self.timeout = timeout
@@ -48,6 +53,19 @@ class SdnRestClient(object):
         self.password = password
         self._validate_mandatory_params_exist()
         self.url.rstrip("/")
+        self.verify = verify
+        if verify:
+            self.verify = self._get_cert(cert_path)
+
+    def _get_cert(self, cert_path):
+        if cert_path:
+            if os.path.exists(cert_path):
+                return cert_path
+            else:
+                raise sdn_exc.SDNDriverCertError(
+                    msg='certificate path: \"%s\" was not found' % cert_path)
+        else:
+            return True
 
     def _validate_mandatory_params_exist(self):
         for arg in self.MANDATORY_ARGS:
@@ -62,8 +80,9 @@ class SdnRestClient(object):
         login_headers = sdn_const.LOGIN_HTTP_HEADER
         try:
             session = requests.session()
+            session.verify = self.verify
             LOG.debug("Login to SDN Provider. Login URL %(url)s",
-                     {'url': login_url})
+                    {'url': login_url})
             r = session.request(sdn_const.POST, login_url, data=login_data,
                                 headers=login_headers, timeout=self.timeout)
             LOG.debug("request status: %d", r.status_code)

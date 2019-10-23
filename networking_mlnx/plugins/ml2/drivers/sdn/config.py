@@ -61,10 +61,10 @@ sdn_opts = [
                    help=_("Time in seconds to wait before a "
                           "processing row is marked back to pending.")),
         cfg.ListOpt('physical_networks',
-                default=sdn_const.ANY,
-                help=_("Comma-separated list of <physical_network> "
-                       "that it will send notification. * "
-                       "means all physical_networks")),
+                    default=sdn_const.ANY,
+                    help=_("Comma-separated list of <physical_network> "
+                           "that it will send notification. * "
+                           "means all physical_networks")),
         cfg.BoolOpt('bind_normal_ports',
                     default=False,
                     help=_("Allow the binding of normal ports for ports "
@@ -76,4 +76,13 @@ sdn_opts = [
                            "ports is allowed. This option is used in "
                            "conjuction with bind_normal_ports. "
                            "The list must be a subset of physical_networks")),
+        cfg.BoolOpt('cert_verify',
+                    default="True",
+                    help=_("Use certificates to verify connections.")),
+        cfg.StrOpt('cert_path',
+                   default="",
+                   help=_("The path of the certificate CA, if left empty the "
+                          "connection will be verified by known trusted "
+                          "authorities (mostly used when the certificates are "
+                          "self signed).")),
 ]
