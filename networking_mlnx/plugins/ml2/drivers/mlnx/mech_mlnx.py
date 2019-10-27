@@ -89,24 +89,26 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         # in case migration did not take place or delete port
         if original_host_id == current_host_id or current_host_id is None:
             return
-
         plugin = directory.get_plugin()
-        # if host_id was empty
-        if not original_port.get("binding:host_id"):
-            # if port doesn't have extra_dhcp_opts
-            if (not updated_port.get("extra_dhcp_opts") and
-                "compute" in updated_port["device_owner"] and
-                updated_port["binding:vnic_type"] in ("direct", "normal")):
-                updated_port["extra_dhcp_opts"] = \
-                    self._gen_client_id_opt(updated_port)
-        else:
-            if original_port.get("extra_dhcp_opts"):
-                updated_port["extra_dhcp_opts"] = \
+        if updated_port.get("extra_dhcp_opts"):
+            if updated_port["extra_dhcp_opts"] == \
+                    self._gen_client_id_opt(updated_port):
+                return
+        if not updated_port["device_owner"]:
+            updated_port["extra_dhcp_opts"] = \
                     self._gen_none_client_id_opt(updated_port)
-        plugin._update_extra_dhcp_opts_on_port(
-            context._plugin_context,
-            updated_port["id"],
-            {port.RESOURCE_NAME: updated_port})
+            plugin._update_extra_dhcp_opts_on_port(
+                context._plugin_context,
+                updated_port["id"],
+                {port.RESOURCE_NAME: updated_port})
+        elif ("compute" in updated_port["device_owner"] and
+                updated_port["binding:vnic_type"] in ("direct", "normal")):
+            updated_port["extra_dhcp_opts"] = \
+                    self._gen_client_id_opt(updated_port)
+            plugin._update_extra_dhcp_opts_on_port(
+                context._plugin_context,
+                updated_port["id"],
+                {port.RESOURCE_NAME: updated_port})
 
     def update_port_precommit(self, context):
         self._process_port_info(context)
