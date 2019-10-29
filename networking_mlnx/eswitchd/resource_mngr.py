@@ -97,13 +97,13 @@ class ResourceManager(object):
                 fabric_details = self.get_fabric_details(fabric)
                 for pf_fabric_details in fabric_details.values():
                     if (pf_fabric_details['pf_device_type'] ==
-                        constants.MLNX4_VF_DEVICE_TYPE):
+                        constants.MLNX4_DEVICE_TYPE):
                         hca_port = pf_fabric_details['hca_port']
                         pf_mlx_dev = pf_fabric_details['pf_mlx_dev']
                         vf_index = self.pci_utils.get_guid_index(
                             pf_mlx_dev, dev, hca_port)
                     elif (pf_fabric_details['pf_device_type'] ==
-                          constants.MLNX5_VF_DEVICE_TYPE):
+                          constants.MLNX5_DEVICE_TYPE):
                         if dev in pf_fabric_details['vfs']:
                             vf_index = pf_fabric_details['vfs'][dev]['vf_num']
                         else:
