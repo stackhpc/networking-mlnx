@@ -86,15 +86,15 @@ class EswitchUtils(object):
         return vnics
 
     def set_port_vlan_id(self, physical_network,
-                         segmentation_id, port_mac):
-        LOG.debug("Set Vlan  %(segmentation_id)s on Port %(port_mac)s "
+                         segmentation_id, pci_slot):
+        LOG.debug("Set Vlan  %(segmentation_id)s on Port %(pci_slot)s "
                   "on Fabric %(physical_network)s",
-                  {'port_mac': port_mac,
+                  {'pci_slot': pci_slot,
                    'segmentation_id': segmentation_id,
                    'physical_network': physical_network})
         msg = jsonutils.dumps({'action': 'set_vlan',
                                'fabric': physical_network,
-                               'port_mac': port_mac,
+                               'pci_slot': pci_slot,
                                'vlan': segmentation_id})
         self.send_msg(msg)
 
@@ -108,31 +108,31 @@ class EswitchUtils(object):
                                    'interface': phy_interface})
             self.send_msg(msg)
 
-    def port_up(self, fabric, port_mac):
-        LOG.debug("Port Up for %(port_mac)s on fabric %(fabric)s",
-                  {'port_mac': port_mac, 'fabric': fabric})
+    def port_up(self, fabric, pci_slot):
+        LOG.debug("Port Up for %(pci_slot)s on fabric %(fabric)s",
+                  {'pci_slot': pci_slot, 'fabric': fabric})
         msg = jsonutils.dumps({'action': 'port_up',
                                'fabric': fabric,
-                               'ref_by': 'mac_address',
-                               'mac': 'port_mac'})
+                               'ref_by': 'pci_slot',
+                               'pci_slot': pci_slot})
         self.send_msg(msg)
 
-    def port_down(self, fabric, port_mac):
-        LOG.debug("Port Down for %(port_mac)s on fabric %(fabric)s",
-                  {'port_mac': port_mac, 'fabric': fabric})
+    def port_down(self, fabric, pci_slot):
+        LOG.debug("Port Down for %(pci_slot)s on fabric %(fabric)s",
+                  {'pci_slot': pci_slot, 'fabric': fabric})
         msg = jsonutils.dumps({'action': 'port_down',
                                'fabric': fabric,
-                               'ref_by': 'mac_address',
-                               'mac': port_mac})
+                               'ref_by': 'pci_slot',
+                               'pci_slot': pci_slot})
         self.send_msg(msg)
 
-    def port_release(self, fabric, port_mac):
-        LOG.debug("Port Release for %(port_mac)s on fabric %(fabric)s",
-                  {'port_mac': port_mac, 'fabric': fabric})
+    def port_release(self, fabric, pci_slot):
+        LOG.debug("Port Release for %(pci_slot)s on fabric %(fabric)s",
+                  {'pci_slot': pci_slot, 'fabric': fabric})
         msg = jsonutils.dumps({'action': 'port_release',
                                'fabric': fabric,
-                               'ref_by': 'mac_address',
-                               'mac': port_mac})
+                               'ref_by': 'pci_slot',
+                               'pci_slot': pci_slot})
         self.send_msg(msg)
 
     def get_eswitch_ports(self, fabric):
