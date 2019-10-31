@@ -18,7 +18,7 @@ import re
 
 from oslo_log import log as logging
 
-from networking_mlnx._i18n import _LE
+from networking_mlnx._i18n import _
 from networking_mlnx.eswitchd.common import constants
 
 LOG = logging.getLogger(__name__)
@@ -34,23 +34,35 @@ class pciUtils(object):
     VENDOR_PATH = ETH_DEV + '/vendor'
     _VIRTFN_RE = re.compile(r'virtfn(?P<vf_num>\d+)')
     VFS_PATH = ETH_DEV + "/virtfn*"
+    PCI_NET_PATH = ETH_DEV + "/virtfn%(vf_num)s/net"
 
     def get_vfs_info(self, pf):
+        """Get VFs information
+
+        :param pf: PF net device name
+        :return: a dict containing VF info of the given PF
+                 dict format example: {'04:00.3' : {'vf_num': '2',
+                                                    'vf_device_type': 'MLNX5'
+                                                   },
+                                       ...
+                                      }
+        """
         vfs_info = {}
         try:
             dev_path = self.ETH_DEV % {'interface': pf}
             dev_info = os.listdir(dev_path)
+            device_type = self.get_pf_device_type(pf)
             for dev_filename in dev_info:
                 result = self._VIRTFN_RE.match(dev_filename)
                 if result and result.group('vf_num'):
                     dev_file = os.path.join(dev_path, dev_filename)
                     vf_pci = os.readlink(dev_file).strip("./")
                     vf_num = result.group('vf_num')
-                    vf_device_type = self.get_pf_device_type(pf)
+                    vf_device_type = device_type
                     vfs_info[vf_pci] = {'vf_num': vf_num,
                                         'vf_device_type': vf_device_type}
-        except Exception:
-            LOG.error("PCI device %s not found", pf)
+        except Exception as e:
+            LOG.error("PCI device %s not found. %s", pf, str(e))
         return vfs_info
 
     def get_dev_attr(self, attr_path):
@@ -61,6 +73,13 @@ class pciUtils(object):
             return
 
     def verify_vendor_pf(self, pf, vendor_id=constants.VENDOR):
+        """Ensure PF net device PCI vendor ID equals vendor_id
+
+        :param pf: PF netdev name
+        :param vendor_id: PCI vendor ID
+        :return: True if the PCI device id of the PF equals vendor_id
+                 else false
+        """
         vendor_path = pciUtils.VENDOR_PATH % {'interface': pf}
         if self.get_dev_attr(vendor_path) == vendor_id:
             return True
@@ -78,13 +97,18 @@ class pciUtils(object):
             elif driver_type == constants.MLNX5_DRIVER_TYPE:
                 device_type = constants.MLNX5_DEVICE_TYPE
             else:
-                raise Exception(_LE('driver type %s is not supported'),
+                raise Exception(_('driver type %s is not supported'),
                                 driver_type)
         except IOError:
             pass
         return device_type
 
     def is_sriov_pf(self, pf):
+        """Checks if PF net dev exists and SR-IOV is enabled
+
+        :param pf: pf netdev name
+        :return: True if the device exists and has SR-IOV enabled.
+        """
         vfs_path = pciUtils.VFS_PATH % {'interface': pf}
         vfs = glob.glob(vfs_path)
         if vfs:
@@ -93,20 +117,23 @@ class pciUtils(object):
             return
 
     def get_pf_mlx_dev(self, pf):
+        """Get PF Infiniband device (AKA mlx device)
+
+        :param pf: pf netdev name
+        :return: pf mlx device name
+        """
         dev_path = (
             os.path.join(pciUtils.ETH_PATH % {'interface': pf},
             pciUtils.INFINIBAND_PATH))
         dev_info = os.listdir(dev_path)
         return dev_info.pop()
 
-    def get_guid_index(self, pf_mlx_dev, dev, hca_port):
-        guid_index = None
-        path = constants.MLNX4_GUID_INDEX_PATH % (pf_mlx_dev, dev, hca_port)
-        with open(path) as fd:
-            guid_index = fd.readline().strip()
-        return guid_index
-
     def get_eth_port(self, dev):
+        """Get network device Port number
+
+        :param dev: netdev name
+        :return: HCA port number
+        """
         port_path = pciUtils.ETH_PORT % {'interface': dev}
         try:
             with open(port_path) as f:
@@ -115,26 +142,34 @@ class pciUtils(object):
         except IOError:
             return
 
-    def get_vfs_macs_ib(self, fabric_details):
+    def get_vfs_macs_ib(self, pf_mlx_name, hca_port, vf_idxs, type):
+        """Get assigned Infiniband mac address for VFs
+
+        :param pf_mlx_name: PF IB device name
+        :param hca_port: hca port number
+        :param vf_idxs: list of VF indexes to get mac address
+        :param type: PF device type, one of [constants.MLNX4_DEVICE_TYPE,
+                    constants.MLNX5_DEVICE_TYPE]
+        :return: mapping between VF index and mac
+        """
         macs_map = {}
-        for pf_fabric_details in fabric_details.values():
-            if (pf_fabric_details['pf_device_type'] ==
-                constants.MLNX4_DEVICE_TYPE):
-                macs_map.update(self.get_vfs_macs_ib_mlnx4(pf_fabric_details))
-            elif (pf_fabric_details['pf_device_type'] ==
-                  constants.MLNX5_DEVICE_TYPE):
-                macs_map.update(self.get_vfs_macs_ib_mlnx5(pf_fabric_details))
+        if type == constants.MLNX4_DEVICE_TYPE:
+            macs_map.update(
+                self._get_vfs_macs_ib_mlnx4(pf_mlx_name, hca_port, vf_idxs))
+        elif type == constants.MLNX5_DEVICE_TYPE:
+            macs_map.update(
+                self._get_vfs_macs_ib_mlnx5(pf_mlx_name, vf_idxs))
         return macs_map
 
-    def get_vfs_macs_ib_mlnx4(self, fabric_details):
-        hca_port = fabric_details['hca_port']
-        pf_mlx_dev = fabric_details['pf_mlx_dev']
+    def _get_vfs_macs_ib_mlnx4(self, pf_mlx_name, hca_port, vf_idxs):
         macs_map = {}
-        guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_dev, hca_port,
+        guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_name, hca_port,
                                                   '[1-9]*')
         paths = glob.glob(guids_path)
         for path in paths:
             vf_index = path.split('/')[-1]
+            if vf_index not in vf_idxs:
+                continue
             with open(path) as f:
                 guid = f.readline().strip()
                 if guid == constants.MLNX4_INVALID_GUID:
@@ -146,27 +181,35 @@ class pciUtils(object):
                 macs_map[str(int(vf_index))] = mac
         return macs_map
 
-    def get_vfs_macs_ib_mlnx5(self, fabric_details):
-        vfs = fabric_details['vfs']
+    def _get_vfs_macs_ib_mlnx5(self, pf_mlx_name, vf_idxs):
         macs_map = {}
-        for vf in vfs.values():
-            vf_num = vf['vf_num']
-            pf_mlx_dev = fabric_details['pf_mlx_dev']
+        for vf_idx in vf_idxs:
             guid_path = (
-                constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
-                                                  'vf_num': vf_num})
+                constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_name,
+                                                  'vf_num': vf_idx})
             with open(guid_path) as f:
                 guid = f.readline().strip()
                 head = guid[:8]
                 tail = guid[-9:]
                 mac = head + tail
-            macs_map[vf_num] = mac
+            macs_map[vf_idx] = mac
         return macs_map
 
-    def get_device_address(self, hostdev):
-        domain = hostdev.attrib['domain'][2:]
-        bus = hostdev.attrib['bus'][2:]
-        slot = hostdev.attrib['slot'][2:]
-        function = hostdev.attrib['function'][2:]
-        dev = "%.4s:%.2s:%2s.%.1s" % (domain, bus, slot, function)
-        return dev
+    def is_assigned_vf(self, pf_name, vf_index):
+        """Check if VF is assigned.
+
+       Checks if a given vf index of a given device name is assigned
+       by checking the relevant path in the system:
+       VF is assigned if PCI_PATH does not exist.
+       @param pf_name: pf network device name
+       @param vf_index: vf index
+        """
+        if not self.is_sriov_pf(pf_name):
+            # If the root PCI path does not exist or has no VFs then
+            # the VF cannot actually have been allocated and there is
+            # no way we can manage it.
+            return False
+
+        path = self.PCI_NET_PATH % {'interface': pf_name, 'vf_num': vf_index}
+
+        return not os.path.exists(path)

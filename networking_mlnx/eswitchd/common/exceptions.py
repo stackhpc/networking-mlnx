@@ -20,3 +20,11 @@ class MlxException(Exception):
 
     def __str__(self):
         return 'MlxException: %s' % self.message
+
+
+class DeviceNotFoundException(MlxException):
+    def __init__(self, message=None):
+        self.message = message
+
+    def __str__(self):
+        return 'PCI device not found: %s' % self.message
