@@ -62,6 +62,19 @@ function configure_neutron_ml2_mlnx {
     if is_service_enabled eswitchd; then
         configure_eswitchd
     fi
+    if is_service_enabled q-dhcp; then
+        iniset /$Q_DHCP_CONF_FILE DEFAULT dhcp_broadcast_reply True
+        iniset /$Q_DHCP_CONF_FILE DEFAULT interface_driver multi
+        iniset /$Q_DHCP_CONF_FILE DEFAULT multi_interface_driver_mappings $PHYSICAL_NETWORK:ipoib
+        iniset /$Q_DHCP_CONF_FILE DEFAULT ipoib_physical_interface $PHYSICAL_INTERFACE
+
+    fi
+    if is_service_enabled q-l3; then
+       iniset /$Q_L3_CONF_FILE DEFAULT interface_driver multi
+       iniset /$Q_L3_CONF_FILE DEFAULT multi_interface_driver_mappings $PHYSICAL_NETWORK:ipoib
+       iniset /$Q_L3_CONF_FILE DEFAULT ipoib_physical_interface $PHYSICAL_INTERFACE
+    fi
+
 }
 
 # init_neutron_ml2_mlnx() - Initialize databases, etc.
