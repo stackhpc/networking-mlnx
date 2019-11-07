@@ -18,6 +18,7 @@ import functools
 from neutron.objects.qos import policy as policy_object
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.api.definitions import provider_net
 from neutron_lib import constants as neutron_const
 from neutron_lib.db import api as db_api
 from neutron_lib.plugins.ml2 import api
@@ -162,8 +163,13 @@ class SDNMechanismDriver(api.MechanismDriver):
         if object_type == sdn_const.PORT:
             SDNMechanismDriver._replace_port_dhcp_opt_name(
                 data, DHCP_OPT_CLIENT_ID_NUM, edo_ext.DHCP_OPT_CLIENT_ID)
+            fabric_type = (SDNMechanismDriver.
+                           _get_fabric_type(context.network.current))
+        else:
+            fabric_type = SDNMechanismDriver._get_fabric_type(context.current)
         journal.record(context._plugin_context.session, object_type,
-                       context.current['id'], operation, data)
+                       context.current['id'], operation, data,
+                       fabric_type=fabric_type)
 
     @context_validator(sdn_const.NETWORK)
     @error_handler
@@ -419,3 +425,25 @@ class SDNMechanismDriver(api.MechanismDriver):
     def _get_network_qos_policy(self, context, net_id):
         return policy_object.QosPolicy.get_network_policy(
             context._plugin_context, net_id)
+
+    @staticmethod
+    def _get_network_physnet(network_context):
+        if (provider_net.PHYSICAL_NETWORK in network_context and
+                network_context[provider_net.PHYSICAL_NETWORK]):
+            return network_context[provider_net.PHYSICAL_NETWORK]
+
+    @staticmethod
+    def _get_ib_physnets():
+        """Returns a list of InfiniBand physnets which is represented by
+        the configuration option `bind_normal_ports_physnets`.
+
+        :return: list of InfiniBand physnets
+        """
+        return cfg.CONF.sdn.bind_normal_ports_physnets
+
+    @staticmethod
+    def _get_fabric_type(network_context):
+        physnet = SDNMechanismDriver._get_network_physnet(network_context)
+        if physnet in SDNMechanismDriver._get_ib_physnets():
+            return sdn_const.FABRIC_IB
+        return sdn_const.FABRIC_ETH
