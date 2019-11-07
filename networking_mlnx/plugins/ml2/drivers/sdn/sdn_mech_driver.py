@@ -196,18 +196,15 @@ class SDNMechanismDriver(api.MechanismDriver):
 
         segments = context.network.network_segments
         for segment in segments:
-            if (segment[api.NETWORK_TYPE] != neutron_const.TYPE_FLAT and
-                    not self._is_sdn_sync_enabled()):
-                # Don't bind to non-flat networks if not syncing to an SDN
-                # controller.
+
+            if not self._is_port_binding_supported(port_dic, segment):
                 continue
 
             # set port to active if supported
-            if self._is_port_set_binding_supported(port_dic, segment):
-                context.set_binding(segment[api.ID],
-                                    self.vif_type,
-                                    self.vif_details,
-                                    neutron_const.PORT_STATUS_ACTIVE)
+            context.set_binding(segment[api.ID],
+                                self.vif_type,
+                                self.vif_details,
+                                neutron_const.PORT_STATUS_ACTIVE)
 
     @context_validator(sdn_const.NETWORK)
     @error_handler
@@ -371,11 +368,12 @@ class SDNMechanismDriver(api.MechanismDriver):
                  neutron_const.DEVICE_OWNER_COMPUTE_PREFIX) or
                  device_owner in self.supported_device_owners))
 
-    def _is_port_set_binding_supported(self, port, segment):
+    def _is_port_binding_supported(self, port, segment):
         """Check if driver is able to bind the port
 
         Port binding is supported if:
-          a. Port VNIC type in supported_vnic_types (currently VNIC_BAREMETAL).
+          a. Port VNIC type in supported_vnic_types (currently VNIC_BAREMETAL)
+             and sdn sync disabled and not flat network.
         Or
           b. Port is of VNIC type normal and:
             1. bind_normal_ports cfg opt is set.
@@ -388,8 +386,12 @@ class SDNMechanismDriver(api.MechanismDriver):
         :return: True if port binding is supported by the driver else False.
         """
         vnic_type = port[portbindings.VNIC_TYPE]
-
         if vnic_type in self.supported_vnic_types:
+            if (segment[api.NETWORK_TYPE] != neutron_const.TYPE_FLAT and
+                    not self._is_sdn_sync_enabled()):
+                # Don't bind to non-flat networks if not syncing to an SDN
+                # controller.
+                return False
             return True
 
         if (vnic_type == portbindings.VNIC_NORMAL and
