@@ -68,12 +68,16 @@ sdn_opts = [
         cfg.BoolOpt('bind_normal_ports',
                     default=False,
                     help=_("Allow the binding of normal ports for ports "
-                           "associated with a physnet from "
+                           "associated with an InfiniBand physnet from "
                            "bind_normal_ports_physnets.")),
+        # TODO(adrianc): The name here is a bit missleading, since there is no
+        # usecase where SDN mechanism driver should bind normal ports for ETH
+        # physnets. this should be renamed to: `infiniband_physnets` which will
+        # require updates to deployment projects as well.
         cfg.ListOpt('bind_normal_ports_physnets',
                     default=[],
-                    help=_("A list of physnets in which binding of normal "
-                           "ports is allowed. This option is used in "
+                    help=_("A list of InfiniBand physnets in which binding of "
+                           "normal ports is allowed. This option is used in "
                            "conjuction with bind_normal_ports. "
                            "The list must be a subset of physical_networks")),
         cfg.BoolOpt('cert_verify',
