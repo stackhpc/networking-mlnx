@@ -42,7 +42,7 @@ class TestEswichManager(base.BaseTestCase):
 
     def test_get_not_exist_port_id(self):
         with testtools.ExpectedException(exceptions.MlnxException):
-            self.manager.get_port_id_by_mac('no-such-mac')
+            self.manager.get_port_id_by_pci('no-such-pci')
 
 
 class TestMlnxEswitchRpcCallbacks(base.BaseTestCase):
@@ -57,13 +57,35 @@ class TestMlnxEswitchRpcCallbacks(base.BaseTestCase):
                 agent)
 
     def test_port_update(self):
-        port = {'mac_address': '10:20:30:40:50:60'}
+        port = {
+            'id': '806f1a00-77cf-4331-9c2d-93e4c321f31d',
+            'mac_address': '10:20:30:40:50:60',
+            'binding:profile': {'pci_slot': '0000:05:00.3'}
+        }
         add_port_update = self.rpc_callbacks.agent.add_port_update
         self.rpc_callbacks.port_update('context', port=port)
-        add_port_update.assert_called_once_with(port['mac_address'])
+        add_port_update.assert_called_once_with(
+            (port['mac_address'], port['binding:profile']['pci_slot']))
+
+    def test_port_update_no_pci(self):
+        port = {
+            'id': '806f1a00-77cf-4331-9c2d-93e4c321f31d',
+            'mac_address': '10:20:30:40:50:60',
+            'binding:profile': {}
+        }
+        add_port_update = self.rpc_callbacks.agent.add_port_update
+        self.rpc_callbacks.port_update('context', port=port)
+        self.assertFalse(add_port_update.called)
 
 
 class TestEswitchAgent(base.BaseTestCase):
+    VNIC_PORT_1 = ('10:20:30:40:50:60', '0000:06:00.2')
+    VNIC_PORT_2 = ('11:21:31:41:51:61', '0000:06:00.3')
+    VNIC_PORT_3 = ('12:22:32:42:52:62', '0000:06:00.4')
+    VNIC_PORT_4 = ('13:23:33:43:53:63', '0000:06:00.5')
+    VNIC_PORT_5 = ('14:24:34:44:54:64', '0000:06:00.6')
+    VNIC_PORT_1_INVALID_MAC = ('ff:ff:ff:ff:ff:ff', '0000:06:00.2')
+    VNIC_PORT_2_INVALID_MAC = ('00:00:00:00:00:00', '0000:06:00.3')
 
     def setUp(self):
         super(TestEswitchAgent, self).setUp()
@@ -89,14 +111,14 @@ class TestEswitchAgent(base.BaseTestCase):
         self.agent.context = mock.Mock()
         self.agent.agent_id = mock.Mock()
         self.agent.eswitch = mock.Mock()
-        self.agent.eswitch.get_vnics_mac.return_value = []
+        self.agent.eswitch.get_vnics.return_value = []
 
     def test_treat_devices_added_returns_true_for_missing_device(self):
         attrs = {'get_devices_details_list.side_effect': Exception()}
         self.agent.plugin_rpc.configure_mock(**attrs)
         with mock.patch('networking_mlnx.plugins.ml2.drivers.mlnx.agent.'
                         'mlnx_eswitch_neutron_agent.EswitchManager.'
-                        'get_vnics_mac',
+                        'get_vnics',
                         return_value=[]):
             self.assertTrue(self.agent.treat_devices_added_or_updated([{}]))
 
@@ -110,7 +132,7 @@ class TestEswitchAgent(base.BaseTestCase):
 
         with mock.patch('networking_mlnx.plugins.ml2.drivers.mlnx.agent.'
                         'mlnx_eswitch_neutron_agent.EswitchManager.'
-                        'get_vnics_mac',
+                        'get_vnics',
                         return_value=[]),\
             mock.patch.object(self.agent.plugin_rpc,
                               'get_devices_details_list',
@@ -120,7 +142,8 @@ class TestEswitchAgent(base.BaseTestCase):
             mock.patch.object(self.agent.plugin_rpc,
                               'update_device_down') as upd_dev_down,\
             mock.patch.object(self.agent, func_name) as func:
-            self.assertFalse(self.agent.treat_devices_added_or_updated([{}]))
+            self.assertFalse(self.agent.treat_devices_added_or_updated(
+                [self.VNIC_PORT_1, self.VNIC_PORT_2]))
         return (func.called, upd_dev_up.called, upd_dev_down.called)
 
     def test_treat_devices_added_updates_known_port(self):
@@ -147,6 +170,7 @@ class TestEswitchAgent(base.BaseTestCase):
     def test_treat_devices_added_updates_known_port_admin_up(self):
         details = {'port_id': '1234567890',
                    'device': '01:02:03:04:05:06',
+                   'profile': {'pci_slot': '0000:06:00.2'},
                    'network_id': '123456789',
                    'network_type': 'vlan',
                    'physical_network': 'default',
@@ -161,7 +185,8 @@ class TestEswitchAgent(base.BaseTestCase):
     def test_treat_devices_removed_returns_true_for_missing_device(self):
         with mock.patch.object(self.agent.plugin_rpc, 'update_device_down',
                                side_effect=Exception()):
-            self.assertTrue(self.agent.treat_devices_removed([{}]))
+            self.assertTrue(self.agent.treat_devices_removed(
+                set([self.VNIC_PORT_1])))
 
     def test_treat_devices_removed_releases_port(self):
         details = dict(exists=False)
@@ -169,7 +194,8 @@ class TestEswitchAgent(base.BaseTestCase):
                                return_value=details):
             with mock.patch.object(self.agent.eswitch,
                                    'port_release') as port_release:
-                self.assertFalse(self.agent.treat_devices_removed([{}]))
+                self.assertFalse(self.agent.treat_devices_removed(
+                    set([self.VNIC_PORT_1])))
                 self.assertTrue(port_release.called)
 
     def _test_process_network_ports(self, port_info):
@@ -185,34 +211,34 @@ class TestEswitchAgent(base.BaseTestCase):
 
     def test_process_network_ports(self):
         self._test_process_network_ports(
-            {'current': set(['10:20:30:40:50:60']),
+            {'current': set(self.VNIC_PORT_1),
              'updated': set(),
-             'added': set(['11:21:31:41:51:61']),
-             'removed': set(['13:23:33:43:53:63'])})
+             'added': set(self.VNIC_PORT_2),
+             'removed': set(self.VNIC_PORT_3)})
 
     def test_process_network_ports_with_updated_ports(self):
         self._test_process_network_ports(
-            {'current': set(['10:20:30:40:50:60']),
-             'updated': set(['12:22:32:42:52:62']),
-             'added': set(['11:21:31:41:51:61']),
-             'removed': set(['13:23:33:43:53:63'])})
+            {'current': set(self.VNIC_PORT_1),
+             'updated': set(self.VNIC_PORT_2),
+             'added': set(self.VNIC_PORT_3),
+             'removed': set(self.VNIC_PORT_4)})
 
     def test_add_port_update(self):
-        mac_addr = '10:20:30:40:50:60'
-        self.agent.add_port_update(mac_addr)
-        self.assertEqual(set([mac_addr]), self.agent.updated_ports)
+        self.agent.add_port_update(self.VNIC_PORT_1)
+        self.assertEqual(set([self.VNIC_PORT_1]), self.agent.updated_ports)
 
     def _mock_scan_ports(self, vif_port_set, previous,
                          updated_ports, sync=False):
         self.agent.updated_ports = updated_ports
-        with mock.patch.object(self.agent.eswitch, 'get_vnics_mac',
+        with mock.patch.object(self.agent.eswitch, 'get_vnics',
                                return_value=vif_port_set):
             return self.agent.scan_ports(previous, sync)
 
     def test_scan_ports_return_current_for_unchanged_ports(self):
-        vif_port_set = set([1, 2])
-        previous = dict(current=set([1, 2]), added=set(),
-                        removed=set(), updated=set())
+        vif_port_set = set([self.VNIC_PORT_1, self.VNIC_PORT_2])
+        previous = dict(
+            current=set([self.VNIC_PORT_1, self.VNIC_PORT_2]), added=set(),
+            removed=set(), updated=set())
         expected = dict(current=vif_port_set, added=set(),
                         removed=set(), updated=set())
         actual = self._mock_scan_ports(vif_port_set,
@@ -220,32 +246,73 @@ class TestEswitchAgent(base.BaseTestCase):
         self.assertEqual(expected, actual)
 
     def test_scan_ports_return_port_changes(self):
-        vif_port_set = set([1, 3])
-        previous = dict(current=set([1, 2]), added=set(),
-                        removed=set(), updated=set())
-        expected = dict(current=vif_port_set, added=set([3]),
-                        removed=set([2]), updated=set())
+        vif_port_set = set([self.VNIC_PORT_1, self.VNIC_PORT_3])
+        previous = dict(current=set([self.VNIC_PORT_1, self.VNIC_PORT_2]),
+                        added=set(), removed=set(), updated=set())
+        expected = dict(current=vif_port_set, added=set([self.VNIC_PORT_3]),
+                        removed=set([self.VNIC_PORT_2]), updated=set())
         actual = self._mock_scan_ports(vif_port_set,
                                        previous, set())
         self.assertEqual(expected, actual)
 
     def test_scan_ports_with_updated_ports(self):
-        vif_port_set = set([1, 3, 4])
-        previous = dict(current=set([1, 2, 4]), added=set(),
-                        removed=set(), updated=set())
-        expected = dict(current=vif_port_set, added=set([3]),
-                        removed=set([2]), updated=set([4]))
+        vif_port_set = set(
+            [self.VNIC_PORT_1, self.VNIC_PORT_3, self.VNIC_PORT_4])
+        previous = dict(
+            current=set([self.VNIC_PORT_1, self.VNIC_PORT_2,
+                         self.VNIC_PORT_4]),
+            added=set(),
+            removed=set(),
+            updated=set())
+        expected = dict(
+            current=vif_port_set,
+            added=set([self.VNIC_PORT_3]),
+            removed=set([self.VNIC_PORT_2]),
+            updated=set([self.VNIC_PORT_4]))
         actual = self._mock_scan_ports(vif_port_set,
-                                       previous, set([4]))
+                                       previous, set([self.VNIC_PORT_4]))
         self.assertEqual(expected, actual)
 
     def test_scan_ports_with_unknown_updated_ports(self):
-        vif_port_set = set([1, 3, 4])
-        previous = dict(current=set([1, 2, 4]), added=set(),
-                        removed=set(), updated=set())
-        expected = dict(current=vif_port_set, added=set([3]),
-                        removed=set([2]), updated=set([4]))
-        actual = self._mock_scan_ports(vif_port_set,
-                                       previous,
-                                       updated_ports=set([4, 5]))
+        vif_port_set = set(
+            [self.VNIC_PORT_1, self.VNIC_PORT_3, self.VNIC_PORT_4])
+        previous = dict(
+            current=set([self.VNIC_PORT_1, self.VNIC_PORT_2,
+                         self.VNIC_PORT_4]),
+            added=set(),
+            removed=set(),
+            updated=set())
+        expected = dict(current=vif_port_set,
+                        added=set([self.VNIC_PORT_3]),
+                        removed=set([self.VNIC_PORT_2]),
+                        updated=set([self.VNIC_PORT_4]))
+        actual = self._mock_scan_ports(
+            vif_port_set, previous, updated_ports=set(
+                [self.VNIC_PORT_4, self.VNIC_PORT_5]))
         self.assertEqual(expected, actual)
+
+    def test_scan_ports_with_invalid_vif(self):
+        vif_port_set = set(
+            [self.VNIC_PORT_1, self.VNIC_PORT_2_INVALID_MAC, self.VNIC_PORT_4])
+        previous = dict(
+            current=set(
+                [self.VNIC_PORT_1, self.VNIC_PORT_3, self.VNIC_PORT_4]),
+            added=set(),
+            removed=set(),
+            updated=set())
+        expected = dict(current=vif_port_set - {self.VNIC_PORT_2_INVALID_MAC},
+                        added=set(),
+                        removed=set([self.VNIC_PORT_3]),
+                        updated=set([self.VNIC_PORT_1]))
+        actual = self._mock_scan_ports(
+            vif_port_set, previous, updated_ports=set([self.VNIC_PORT_1]))
+        self.assertEqual(expected, actual)
+
+    def test_fix_eswitchd_vnic_macs(self):
+        vif_port_set = {self.VNIC_PORT_1_INVALID_MAC,
+                        self.VNIC_PORT_2_INVALID_MAC, self.VNIC_PORT_3}
+        updated_ports_cache = {self.VNIC_PORT_1[1]: self.VNIC_PORT_1[0]}
+        fixed_vif_ports = self.agent.fix_eswitchd_vnic_macs(
+            vif_port_set, updated_ports_cache)
+        expected_vif_port_set = set([self.VNIC_PORT_1, self.VNIC_PORT_3])
+        self.assertEqual(expected_vif_port_set, fixed_vif_ports)
