@@ -56,6 +56,9 @@ function configure_neutron_ml2_mlnx {
         fi
         if [[ -n "$PHYSICAL_INTERFACE_MAPPINGS" ]]; then
             iniset /$Q_PLUGIN_CONF_FILE eswitch physical_interface_mappings $PHYSICAL_INTERFACE_MAPPINGS
+            iniset /$Q_PLUGIN_CONF_FILE sdn bind_normal_ports_physnets $PHYSICAL_NETWORK
+            iniset /$Q_PLUGIN_CONF_FILE sdn bind_normal_ports True
+            iniset /$Q_PLUGIN_CONF_FILE sdn sync_enabled False
         fi
         iniset /$Q_PLUGIN_CONF_FILE securitygroup noop
     fi
