@@ -203,10 +203,18 @@ class SdnDriverTestCase(SdnConfigBase):
                     'network_id': 'c13bba05-eb07-45ba-ace2-765706b2d701',
                     'network_qos_policy': None}
 
+        current_network = {'provider:segmentation_id': SEG_ID,
+                           'id': 'c13bba05-eb07-45ba-ace2-765706b2d701',
+                           'name': 'net1',
+                           'provider:network_type': 'vlan',
+                           'provider:physical_network': 'default',
+                           'network_qos_policy': None}
+
         # The port context should have NetwrokContext object that contain
         # the segments list
         network_context = type('NetworkContext', (object,),
-                            {"network_segments": self._get_segments_list()})
+                               {"network_segments": self._get_segments_list(),
+                                'current': current_network})
 
         context = mock.Mock(current=current, _port=current,
                             original=original,
@@ -227,10 +235,19 @@ class SdnDriverTestCase(SdnConfigBase):
                    'device_owner': DEVICE_OWNER_COMPUTE,
                    'network_id': 'c13bba05-eb07-45ba-ace2-765706b2d701',
                    'network_qos_policy': None}
+
+        current_network = {'provider:segmentation_id': SEG_ID,
+                           'id': 'c13bba05-eb07-45ba-ace2-765706b2d701',
+                           'name': 'net1',
+                           'provider:network_type': 'vlan',
+                           'provider:physical_network': 'default',
+                           'network_qos_policy': None}
+
         # The port context should have NetwrokContext object that contain
         # the segments list
         network_context = type('NetworkContext', (object,),
-                            {"network_segments": self._get_segments_list()})
+                               {"network_segments": self._get_segments_list(),
+                                'current': current_network})
         context = mock.Mock(current=current, _port=current,
                             segments_to_bind=self._get_segments_list(),
                             network=network_context)
@@ -603,3 +620,28 @@ class SdnDriverTestCase(SdnConfigBase):
             self._call_operation_object(operation, object_type)
             rows = db.get_all_db_rows(self.db_session)
             self.assertEqual(0, len(rows))
+
+    def test_get_fabric_type_default(self):
+        network_context = {'provider:segmentation_id': SEG_ID,
+                           'id': 'c13bba05-eb07-45ba-ace2-765706b2d701',
+                           'name': 'net1',
+                           'provider:network_type': 'vlan',
+                           'provider:physical_network': 'default',
+                           'network_qos_policy': None}
+        self.mech = sdn_mech_driver.SDNMechanismDriver()
+        self.assertEqual(sdn_const.FABRIC_ETH,
+                         self.mech._get_fabric_type(network_context))
+
+    def test_get_fabric_type_ib(self):
+        self.conf.set_override(
+            'bind_normal_ports_physnets', ['ibnet'], sdn_const.GROUP_OPT)
+
+        network_context = {'provider:segmentation_id': SEG_ID,
+                           'id': 'c13bba05-eb07-45ba-ace2-765706b2d701',
+                           'name': 'net1',
+                           'provider:network_type': 'vlan',
+                           'provider:physical_network': 'ibnet',
+                           'network_qos_policy': None}
+        self.mech = sdn_mech_driver.SDNMechanismDriver()
+        self.assertEqual(sdn_const.FABRIC_IB,
+                         self.mech._get_fabric_type(network_context))

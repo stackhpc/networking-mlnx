@@ -113,6 +113,13 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         row = db.get_oldest_pending_db_row_with_lock(self.db_session)
         self.assertIsNone(row)
 
+    def test_get_oldest_pending_row_none_when_rows_are_eth(self):
+        db.create_pending_row(self.db_session, *self.UPDATE_ROW,
+                              fabric_type=sdn_const.FABRIC_ETH)
+        row = db.get_oldest_pending_db_row_with_lock(
+            self.db_session, fabric_type=sdn_const.FABRIC_IB)
+        self.assertIsNone(row)
+
     def _test_get_oldest_pending_row_none(self, state):
         db.create_pending_row(self.db_session, *self.UPDATE_ROW)
         row = db.get_all_db_rows(self.db_session)[0]
@@ -149,6 +156,17 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         db.create_pending_row(self.db_session, *self.UPDATE_ROW)
         row = db.get_oldest_pending_db_row_with_lock(self.db_session)
         self.assertEqual(older_row, row)
+
+    def test_get_oldest_pending_row_fabric_default(self):
+        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
+        row = db.get_all_db_rows(self.db_session)[0]
+        self.assertEqual(sdn_const.FABRIC_ETH, row.fabric_type)
+
+    def test_get_oldest_pending_row_fabric_ib(self):
+        args = self.UPDATE_ROW + [sdn_const.FABRIC_IB]
+        db.create_pending_row(self.db_session, *args)
+        row = db.get_all_db_rows(self.db_session)[0]
+        self.assertEqual(sdn_const.FABRIC_IB, row.fabric_type)
 
     def test_get_all_monitoring_db_row_by_oldest_order(self):
         db.create_pending_row(self.db_session, *self.UPDATE_ROW)

@@ -38,3 +38,7 @@ COMPLETED = 'completed'
 
 # Constants for physical_networks option
 ANY = '*'
+
+# fabric types
+FABRIC_ETH = 'ETH'
+FABRIC_IB = 'IB'
