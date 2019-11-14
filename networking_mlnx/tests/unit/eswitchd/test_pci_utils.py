@@ -20,7 +20,6 @@ import subprocess
 import mock
 import six
 
-from networking_mlnx._i18n import _LE
 from networking_mlnx.eswitchd.utils import pci_utils
 from networking_mlnx.tests import base
 
@@ -43,7 +42,7 @@ class TestPciUtils(base.TestCase):
         pf = "pf_that_does_not_exist"
         with mock.patch.object(pci_utils, 'LOG') as LOG:
             self.pci_utils.get_vfs_info(pf)
-            LOG.error.assert_called_with(_LE("PCI device %s not found"), pf)
+            self.assertTrue(LOG.error.called)
 
     def test_get_dev_attr_valid_attr(self):
         cmd = "find /sys/class/net/*/device/vendor | head -1 | cut -d '/' -f5"

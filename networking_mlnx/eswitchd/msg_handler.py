@@ -89,16 +89,16 @@ class DetachVnic(BasicMessageHandler):
 
 
 class SetVLAN(BasicMessageHandler):
-    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'port_mac', 'vlan')
+    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'pci_slot', 'vlan')
 
     def __init__(self, msg):
         super(SetVLAN, self).__init__(msg)
 
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
-        vnic_mac = (self.msg['port_mac']).lower()
+        pci_slot = self.msg['pci_slot']
         vlan = self.msg['vlan']
-        ret = eswitch_handler.set_vlan(fabric, vnic_mac, vlan)
+        ret = eswitch_handler.set_vlan(fabric, pci_slot, vlan)
         reason = None
         if not ret:
             reason = 'Set VLAN Failed'
@@ -116,8 +116,7 @@ class GetVnics(BasicMessageHandler):
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
         if fabric == '*':
-            fabrics = eswitch_handler.eswitches.keys()
-            LOG.info("fabrics = %s", fabrics)
+            fabrics = None
         else:
             fabrics = [fabric]
         vnics = eswitch_handler.get_vnics(fabrics)
@@ -125,22 +124,22 @@ class GetVnics(BasicMessageHandler):
 
 
 class PortRelease(BasicMessageHandler):
-    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'ref_by', 'mac')
+    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'ref_by', 'pci_slot')
 
     def __init__(self, msg):
         super(PortRelease, self).__init__(msg)
 
     def execute(self, eswitch_handler):
-        ref_by_keys = ['mac_address']
+        ref_by_keys = ['pci_slot']
         fabric = self.msg['fabric']
-        vnic_mac = (self.msg['mac']).lower()
+        pci_slot = self.msg['pci_slot']
         ref_by = self.msg['ref_by']
         reason = None
         if ref_by not in ref_by_keys:
-            reason = "reb_by %s is not supported" % ref_by
+            reason = "ref_by %s is not supported" % ref_by
         else:
             try:
-                eswitch_handler.port_release(fabric, vnic_mac)
+                eswitch_handler.port_release(fabric, pci_slot)
             except Exception:
                 reason = "port release failed"
                 LOG.exception("PortRelease failed")
@@ -163,28 +162,28 @@ class SetFabricMapping(BasicMessageHandler):
 
 
 class PortUp(BasicMessageHandler):
-    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'mac')
+    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'pci_slot')
 
     def __init__(self, msg):
         super(PortUp, self).__init__(msg)
 
     def execute(self, eswitch_handler):
         # fabric = self.msg['fabric']
-        # mac = self.msg['mac']
-        # eswitch_handler.port_up(fabric, mac)
+        # pci_slot = self.msg['pci_slot']
+        # eswitch_handler.port_up(fabric, pci_slot)
         return self.build_response(True, response={})
 
 
 class PortDown(BasicMessageHandler):
-    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'mac')
+    MSG_ATTRS_MANDATORY_MAP = ('fabric', 'pci_slot')
 
     def __init__(self, msg):
         super(PortDown, self).__init__(msg)
 
     def execute(self, eswitch_handler):
         # fabric = self.msg['fabric']
-        # mac = self.msg['mac']
-        # eswitch_handler.port_down(fabric, mac)
+        # pci_slot = self.msg['pci_slot']
+        # eswitch_handler.port_down(fabric, pci_slot)
         return self.build_response(True, response={})
 
 
@@ -195,11 +194,8 @@ class GetEswitchTables(BasicMessageHandler):
         super(GetEswitchTables, self).__init__(msg)
 
     def execute(self, eswitch_handler):
-        fabric = self.msg.get('fabric', '*')
-        if fabric == '*':
-            fabrics = eswitch_handler.eswitches.keys()
-            LOG.info("fabrics = %s", fabrics)
-        else:
+        fabric = self.msg.get('fabric', None)
+        if fabric:
             fabrics = [fabric]
         response = {'tables': eswitch_handler.get_eswitch_tables(fabrics)}
         return self.build_response(True, response=response)
