@@ -37,7 +37,8 @@ class IpCommand(netdev_ops_abs.NetDevOperations):
             ip = pyroute2.IPRoute()
             link_idx = ip.link_lookup(ifname=pf_ifname)[0]
             ip.link(
-                'set', index=link_idx, vf={'vf': vf_idx, 'link_state': state})
+                'set', index=link_idx, vf={'vf': int(vf_idx),
+                                           'link_state': state})
         except IndexError:
             raise exceptions.NetworkInterfaceNotFound(pf_ifname)
         except pyroute2.NetlinkError as e:
@@ -70,10 +71,10 @@ class IpCommand(netdev_ops_abs.NetDevOperations):
         try:
             ip = pyroute2.IPRoute()
             link_idx = ip.link_lookup(ifname=pf_ifname)[0]
-            ip.link('set', index=link_idx, vf={'vf': vf_idx,
+            ip.link('set', index=link_idx, vf={'vf': int(vf_idx),
                                                'ib_port_guid': guid})
             ip.link('set', index=link_idx,
-                    vf={'vf': vf_idx, 'ib_node_guid': guid})
+                    vf={'vf': int(vf_idx), 'ib_node_guid': guid})
         except IndexError:
             raise exceptions.NetworkInterfaceNotFound(pf_ifname)
         except pyroute2.NetlinkError as e:
