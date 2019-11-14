@@ -16,9 +16,9 @@
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
-from networking_mlnx.eswitchd.utils import pci_utils
-
 from networking_mlnx.eswitchd import eswitch_manager
+from networking_mlnx.eswitchd.utils import pci_utils
+from networking_mlnx.internal.netdev_ops import constants as netdev_consts
 
 
 LOG = logging.getLogger(__name__)
@@ -93,14 +93,14 @@ class eSwitchHandler(object):
         return ret
 
     def port_up(self, fabric, pci_slot):
-        # TODO(adrianc) decide what to do with this method
-        LOG.info("IB port for device %s doen't support "
-                 "port up", pci_slot)
+        # TODO(adrianc): remove un-needed fabric arg
+        self.eswitch_mgr.set_device_admin_state(
+            pci_slot, netdev_consts.ADMIN_STATE_UP)
 
     def port_down(self, fabric, pci_slot):
-        # TODO(adrianc) decide what to do with this method
-        LOG.info("IB port for device %s doen't support "
-                 "port down", pci_slot)
+        # TODO(adrianc): remove un-needed fabric arg
+        self.eswitch_mgr.set_device_admin_state(
+            pci_slot, netdev_consts.ADMIN_STATE_DOWN)
 
     def set_vlan(self, fabric, pci_slot, vlan):
         if pci_slot:

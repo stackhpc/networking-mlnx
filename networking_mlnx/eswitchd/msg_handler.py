@@ -168,9 +168,9 @@ class PortUp(BasicMessageHandler):
         super(PortUp, self).__init__(msg)
 
     def execute(self, eswitch_handler):
-        # fabric = self.msg['fabric']
-        # pci_slot = self.msg['pci_slot']
-        # eswitch_handler.port_up(fabric, pci_slot)
+        fabric = self.msg['fabric']
+        pci_slot = self.msg['pci_slot']
+        eswitch_handler.port_up(fabric, pci_slot)
         return self.build_response(True, response={})
 
 
@@ -181,9 +181,9 @@ class PortDown(BasicMessageHandler):
         super(PortDown, self).__init__(msg)
 
     def execute(self, eswitch_handler):
-        # fabric = self.msg['fabric']
-        # pci_slot = self.msg['pci_slot']
-        # eswitch_handler.port_down(fabric, pci_slot)
+        fabric = self.msg['fabric']
+        pci_slot = self.msg['pci_slot']
+        eswitch_handler.port_down(fabric, pci_slot)
         return self.build_response(True, response={})
 
 

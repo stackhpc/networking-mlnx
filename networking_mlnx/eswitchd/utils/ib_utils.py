@@ -134,9 +134,6 @@ class IbUtils(object):
                 pf_net_dev, int(vf_idx), netdev_const.ADMIN_STATE_DOWN)
             sys_api.sys_write(constants.UNBIND_PATH, vf_pci_slot)
             sys_api.sys_write(constants.BIND_PATH, vf_pci_slot)
-        else:
-            net_dev_api.set_vf_admin_state(
-                pf_net_dev, int(vf_idx), netdev_const.ADMIN_STATE_UP)
 
     def config_vlan_ib(self, pf_mlx_dev, vf_pci_slot, vf_device_type, hca_port,
                        vlan):
