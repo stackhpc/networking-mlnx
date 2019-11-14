@@ -36,7 +36,6 @@ LOG = log.getLogger(__name__)
 cfg.CONF.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
 
 NETWORK_QOS_POLICY = 'network_qos_policy'
-DHCP_OPT_CLIENT_ID_NUM = '61'
 
 
 def context_validator(context_type=None):
@@ -162,7 +161,8 @@ class SDNMechanismDriver(api.MechanismDriver):
             data = context.current
         if object_type == sdn_const.PORT:
             SDNMechanismDriver._replace_port_dhcp_opt_name(
-                data, DHCP_OPT_CLIENT_ID_NUM, edo_ext.DHCP_OPT_CLIENT_ID)
+                data, edo_ext.DHCP_OPT_CLIENT_ID_NUM,
+                edo_ext.DHCP_OPT_CLIENT_ID)
             fabric_type = (SDNMechanismDriver.
                            _get_fabric_type(context.network.current))
         else:
@@ -222,10 +222,10 @@ class SDNMechanismDriver(api.MechanismDriver):
     def _get_client_id_from_port(self, port):
         dhcp_opts = port.get('extra_dhcp_opts', [])
         for dhcp_opt in dhcp_opts:
-            if (isinstance(dhcp_opt, dict) and
-                    dhcp_opt.get('opt_name') in (edo_ext.DHCP_OPT_CLIENT_ID,
-                                                 DHCP_OPT_CLIENT_ID_NUM)):
-                return dhcp_opt.get('opt_value')
+            if isinstance(dhcp_opt, dict):
+                if dhcp_opt.get('opt_name') in (edo_ext.DHCP_OPT_CLIENT_ID,
+                        edo_ext.DHCP_OPT_CLIENT_ID_NUM):
+                    return dhcp_opt.get('opt_value')
 
     @staticmethod
     def _replace_port_dhcp_opt_name(port, old_opt_name, new_opt_name):
