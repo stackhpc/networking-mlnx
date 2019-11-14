@@ -63,7 +63,11 @@ class PfPciDeviceWrapper(object):
     def set_vf_state(self, vf_index, state):
         """Set VF admin state
         """
-        net_dev_api.set_vf_admin_state(self.net_dev_name, vf_index, state)
+        if self.device_type == constants.MLNX4_DEVICE_TYPE:
+            LOG.warning(
+                "Changing VF admin state for MLX4 device is not supported.")
+        else:
+            net_dev_api.set_vf_admin_state(self.net_dev_name, vf_index, state)
 
     def config_port_up(self):
         """Set PF netdev link state to UP
@@ -190,9 +194,8 @@ class EmbSwitch(object):
                     mac will be invalidated.
 
         Note:
-        When setting a valid MAC address, the VF admin state will change to
-        enable. When invalidating MAC address (mac=None),
-        VF admin state will change to disable.
+        When invalidating MAC address (mac=None), VF admin state will change
+        to disable.
         """
         vf_index = self._get_vf_index(pci_slot)
         self.pf_dev_wrapper.config_vf_mac_address(vf_index, pci_slot, mac)
