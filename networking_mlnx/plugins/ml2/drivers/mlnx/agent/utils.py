@@ -51,11 +51,11 @@ class EswitchUtils(object):
 
     @comm_utils.RetryDecorator(exceptions.RequestTimeout)
     def send_msg(self, msg):
-        self._conn.send(msg)
+        self._conn.send_string(msg)
 
         socks = dict(self.poller.poll(self.timeout))
         if socks.get(self._conn) == zmq.POLLIN:
-            recv_msg = self._conn.recv()
+            recv_msg = self._conn.recv_string()
             response = self.parse_response_msg(recv_msg)
             return response
         else:

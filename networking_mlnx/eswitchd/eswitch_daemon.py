@@ -88,7 +88,7 @@ class MlxEswitchDaemon(object):
             except Exception as e:
                 LOG.exception("Exception during message handling - %s", e)
                 msg = str(e)
-            sender.send(msg)
+            sender.send_string(msg)
 
     def daemon_loop(self):
         LOG.info("Daemon Started!")
