@@ -38,13 +38,13 @@ class ConnUtil(object):
         socket.connect(self.conn_url)
 
         try:
-            socket.send(msg)
+            socket.send_string(msg)
             poller = zmq.Poller()
             poller.register(socket, zmq.POLLIN)
             conn = dict(poller.poll(REQUEST_TIMEOUT))
             if conn:
                 if conn.get(socket) == zmq.POLLIN:
-                    response_msg = socket.recv(zmq.NOBLOCK)
+                    response_msg = socket.recv_string(zmq.NOBLOCK)
                     response = self.parse_response_msg(response_msg)
                     return response
             else:
