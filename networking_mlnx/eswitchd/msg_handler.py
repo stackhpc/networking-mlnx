@@ -97,7 +97,7 @@ class SetVLAN(BasicMessageHandler):
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
         pci_slot = self.msg['pci_slot']
-        vlan = self.msg['vlan']
+        vlan = int(self.msg['vlan'])
         ret = eswitch_handler.set_vlan(fabric, pci_slot, vlan)
         reason = None
         if not ret:

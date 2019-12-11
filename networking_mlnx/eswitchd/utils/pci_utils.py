@@ -34,14 +34,14 @@ class pciUtils(object):
     VENDOR_PATH = ETH_DEV + '/vendor'
     _VIRTFN_RE = re.compile(r'virtfn(?P<vf_num>\d+)')
     VFS_PATH = ETH_DEV + "/virtfn*"
-    PCI_NET_PATH = ETH_DEV + "/virtfn%(vf_num)s/net"
+    PCI_NET_PATH = ETH_DEV + "/virtfn%(vf_num)d/net"
 
     def get_vfs_info(self, pf):
         """Get VFs information
 
         :param pf: PF net device name
         :return: a dict containing VF info of the given PF
-                 dict format example: {'04:00.3' : {'vf_num': '2',
+                 dict format example: {'04:00.3' : {'vf_num': 2,
                                                     'vf_device_type': 'MLNX5'
                                                    },
                                        ...
@@ -57,12 +57,13 @@ class pciUtils(object):
                 if result and result.group('vf_num'):
                     dev_file = os.path.join(dev_path, dev_filename)
                     vf_pci = os.readlink(dev_file).strip("./")
-                    vf_num = result.group('vf_num')
+                    vf_num = int(result.group('vf_num'))
                     vf_device_type = device_type
                     vfs_info[vf_pci] = {'vf_num': vf_num,
                                         'vf_device_type': vf_device_type}
         except Exception as e:
             LOG.error("PCI device %s not found. %s", pf, str(e))
+        LOG.info("VFs info for PF %s: %s", pf, vfs_info)
         return vfs_info
 
     def get_dev_attr(self, attr_path):

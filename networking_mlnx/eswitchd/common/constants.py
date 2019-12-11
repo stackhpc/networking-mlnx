@@ -27,9 +27,9 @@ MLNX4_PKEY_INDEX_PATH = "/sys/class/infiniband/%s/iov/%s/ports/%s/pkey_idx/%s"
 
 # MLNX5
 MLNX5_GUID_NODE_PATH = ('/sys/class/infiniband/%(module)s/device/sriov/'
-                      '%(vf_num)s/node')
+                      '%(vf_num)d/node')
 MLNX5_GUID_PORT_PATH = ('/sys/class/infiniband/%(module)s/device/sriov/'
-                      '%(vf_num)s/port')
+                      '%(vf_num)d/port')
 UNBIND_PATH = '/sys/bus/pci/drivers/mlx5_core/unbind'
 BIND_PATH = '/sys/bus/pci/drivers/mlx5_core/bind'
 

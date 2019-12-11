@@ -26,10 +26,10 @@ LOG = logging.getLogger(__name__)
 
 class IbUtils(object):
     INVALID_PKEY = 'none'
-    DEFAULT_PKEY_IDX = '0'
-    PARTIAL_PKEY_IDX = '1'
+    DEFAULT_PKEY_IDX = 0
+    PARTIAL_PKEY_IDX = 1
     DEFAULT_MASK = 0x7fff
-    DEFAULT_PKEY = '0xffff'
+    DEFAULT_PKEY = 0xffff
     PKEYS_PATH = "/sys/class/infiniband/%s/ports/%s/pkeys/*"
 
     def _config_vf_pkey(self, ppkey_idx, pkey_idx,
@@ -42,7 +42,7 @@ class IbUtils(object):
         path = constants.MLNX4_GUID_INDEX_PATH % (pf_mlx_dev, dev, hca_port)
         with open(path) as fd:
             idx = fd.readline().strip()
-        return idx
+        return int(idx)
 
     def _get_guid_from_mac(self, mac, device_type):
         guid = None
@@ -95,7 +95,7 @@ class IbUtils(object):
             vf_pci_slot, hca_port)
 
         try:
-            net_dev_api.set_vf_guid(pf_net_dev, int(vf_idx), vguid)
+            net_dev_api.set_vf_guid(pf_net_dev, vf_idx, vguid)
         except Exception as e:
             LOG.info("Failed to set vf guid via netlink. "
                      "%s, attempting to set vf guid via sysfs", str(e))
@@ -106,8 +106,8 @@ class IbUtils(object):
             sys_api.sys_write(path, vguid)
 
         ppkey_idx = self._get_pkey_idx(
-            int(IbUtils.DEFAULT_PKEY, 16), pf_mlx_dev, hca_port)
-        if ppkey_idx >= 0:
+            IbUtils.DEFAULT_PKEY, pf_mlx_dev, hca_port)
+        if ppkey_idx is not None:
             self._config_vf_pkey(
                 ppkey_idx, IbUtils.PARTIAL_PKEY_IDX, pf_mlx_dev, vf_pci_slot,
                 hca_port)
@@ -118,7 +118,7 @@ class IbUtils(object):
     def _config_vf_mac_address_mlnx5(self, pf_net_dev, pf_mlx_dev, vf_idx,
                                      vf_pci_slot, vguid):
         try:
-            net_dev_api.set_vf_guid(pf_net_dev, int(vf_idx), vguid)
+            net_dev_api.set_vf_guid(pf_net_dev, vf_idx, vguid)
         except Exception as e:
             LOG.info("Failed to set vf guid via netlink. "
                      "%s, attempting to set vf guid via sysfs", str(e))
@@ -131,7 +131,7 @@ class IbUtils(object):
 
         if vguid == constants.MLNX5_INVALID_GUID:
             net_dev_api.set_vf_admin_state(
-                pf_net_dev, int(vf_idx), netdev_const.ADMIN_STATE_DOWN)
+                pf_net_dev, vf_idx, netdev_const.ADMIN_STATE_DOWN)
             sys_api.sys_write(constants.UNBIND_PATH, vf_pci_slot)
             sys_api.sys_write(constants.BIND_PATH, vf_pci_slot)
 
@@ -147,19 +147,26 @@ class IbUtils(object):
     def _config_vlan_ib_mlnx4(self, pf_mlx_dev, vf_pci_slot, hca_port, vlan):
         if vlan == 0:
             ppkey_idx = self._get_pkey_idx(
-                int(IbUtils.DEFAULT_PKEY, 16), pf_mlx_dev, hca_port)
-            if ppkey_idx >= 0:
+                IbUtils.DEFAULT_PKEY, pf_mlx_dev, hca_port)
+            if ppkey_idx is not None:
                 self._config_vf_pkey(
                     ppkey_idx, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
                     vf_pci_slot, hca_port)
         else:
-            ppkey_idx = self._get_pkey_idx(str(vlan), pf_mlx_dev, hca_port)
-            if ppkey_idx:
+            ppkey_idx = self._get_pkey_idx(vlan, pf_mlx_dev, hca_port)
+            if ppkey_idx is not None:
                 self._config_vf_pkey(
                     ppkey_idx, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
                     vf_pci_slot, hca_port)
 
     def _get_pkey_idx(self, vlan, pf_mlx_dev, hca_port):
+        """get PKEY index for provided vlan ID
+
+        :param vlan: Vlan ID
+        :param pf_mlx_dev: PF mlx device
+        :param hca_port: HCA port number
+        :return: matching pkey index or None
+        """
         paths = IbUtils.PKEYS_PATH % (pf_mlx_dev, hca_port)
         for path in glob.glob(paths):
             fd = open(path)
@@ -169,8 +176,8 @@ class IbUtils(object):
             # the other 15 bit are the number of the pkey
             # so we want to remove the 16th bit when compare pkey file
             # to the vlan (pkey) we are looking for
-            is_match = (int(pkey, 16) & IbUtils.DEFAULT_MASK == int(vlan) &
+            is_match = (int(pkey, 16) & IbUtils.DEFAULT_MASK == vlan &
                         IbUtils.DEFAULT_MASK)
             if is_match:
-                return path.split('/')[-1]
+                return int(path.split('/')[-1])
         return None
