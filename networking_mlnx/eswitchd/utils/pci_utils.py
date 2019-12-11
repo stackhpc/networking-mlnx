@@ -143,59 +143,6 @@ class pciUtils(object):
         except IOError:
             return
 
-    def get_vfs_macs_ib(self, pf_mlx_name, hca_port, vf_idxs, type):
-        """Get assigned Infiniband mac address for VFs
-
-        :param pf_mlx_name: PF IB device name
-        :param hca_port: hca port number
-        :param vf_idxs: list of VF indexes to get mac address
-        :param type: PF device type, one of [constants.MLNX4_DEVICE_TYPE,
-                    constants.MLNX5_DEVICE_TYPE]
-        :return: mapping between VF index and mac
-        """
-        macs_map = {}
-        if type == constants.MLNX4_DEVICE_TYPE:
-            macs_map.update(
-                self._get_vfs_macs_ib_mlnx4(pf_mlx_name, hca_port, vf_idxs))
-        elif type == constants.MLNX5_DEVICE_TYPE:
-            macs_map.update(
-                self._get_vfs_macs_ib_mlnx5(pf_mlx_name, vf_idxs))
-        return macs_map
-
-    def _get_vfs_macs_ib_mlnx4(self, pf_mlx_name, hca_port, vf_idxs):
-        macs_map = {}
-        guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_name, hca_port,
-                                                  '[1-9]*')
-        paths = glob.glob(guids_path)
-        for path in paths:
-            vf_index = path.split('/')[-1]
-            if vf_index not in vf_idxs:
-                continue
-            with open(path) as f:
-                guid = f.readline().strip()
-                if guid == constants.MLNX4_INVALID_GUID:
-                    mac = constants.INVALID_MAC
-                else:
-                    head = guid[:6]
-                    tail = guid[-6:]
-                    mac = ":".join(re.findall('..?', head + tail))
-                macs_map[str(int(vf_index))] = mac
-        return macs_map
-
-    def _get_vfs_macs_ib_mlnx5(self, pf_mlx_name, vf_idxs):
-        macs_map = {}
-        for vf_idx in vf_idxs:
-            guid_path = (
-                constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_name,
-                                                  'vf_num': vf_idx})
-            with open(guid_path) as f:
-                guid = f.readline().strip()
-                head = guid[:8]
-                tail = guid[-9:]
-                mac = head + tail
-            macs_map[vf_idx] = mac
-        return macs_map
-
     def is_assigned_vf(self, pf_name, vf_index):
         """Check if VF is assigned.
 

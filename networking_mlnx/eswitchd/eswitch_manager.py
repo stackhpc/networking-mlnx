@@ -53,7 +53,7 @@ class PfPciDeviceWrapper(object):
         return self.pci_utils.is_assigned_vf(self.net_dev_name, vf_num)
 
     def get_vfs_macs_ib(self, vf_idxs):
-        return self.pci_utils.get_vfs_macs_ib(
+        return self.ib_utils.get_vfs_macs_ib(
             self.mlx_dev_name, self.hca_port, vf_idxs, self.device_type)
 
     def get_vf_state(self, vf_index):
