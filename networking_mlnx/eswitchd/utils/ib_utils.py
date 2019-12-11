@@ -18,6 +18,7 @@ import re
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
+from networking_mlnx.eswitchd.utils import pci_utils
 from networking_mlnx.internal.netdev_ops import api as net_dev_api
 from networking_mlnx.internal.netdev_ops import constants as netdev_const
 from networking_mlnx.internal.sys_ops import api as sys_api
@@ -83,14 +84,34 @@ class IbUtils(object):
                 self._get_vfs_macs_ib_mlnx5(pf_mlx_name, vf_idxs))
         return macs_map
 
+    def _get_gid_to_vf_idx_mapping(self, pf_ib_dev, hca_port, vf_idxs):
+        """Get mapping between VF GID index and VF PCI index
+
+        :param pf_ib_dev: PF IB device name
+        :param hca_port: hca port number
+        :param vf_idxs: list of vf indexes
+        :return: dict mapping between gid index and VF PCI index
+        """
+        pciu = pci_utils.pciUtils()
+        pf_pci_addr = pciu.get_pci_from_ib_dev(pf_ib_dev)
+        mapping = {}
+        for vf_idx in vf_idxs:
+            vf_pci_addr = pciu.get_vf_from_vf_idx(pf_pci_addr, vf_idx)
+            vf_gid = self._get_guid_idx_mlx4(pf_ib_dev, vf_pci_addr, hca_port)
+            mapping[vf_gid] = vf_idx
+        return mapping
+
     def _get_vfs_macs_ib_mlnx4(self, pf_mlx_name, hca_port, vf_idxs):
         macs_map = {}
+        gid_idx_to_vf_idx = self._get_gid_to_vf_idx_mapping(
+            pf_mlx_name, hca_port, vf_idxs)
+        gid_idxs = gid_idx_to_vf_idx.keys()
         guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_name, hca_port,
                                                   '[1-9]*')
         paths = glob.glob(guids_path)
         for path in paths:
-            vf_index = path.split('/')[-1]
-            if vf_index not in vf_idxs:
+            gid_index = int(path.split('/')[-1])
+            if gid_index not in gid_idxs:
                 continue
             with open(path) as f:
                 guid = f.readline().strip()
@@ -100,7 +121,7 @@ class IbUtils(object):
                     head = guid[:6]
                     tail = guid[-6:]
                     mac = ":".join(re.findall('..?', head + tail))
-                macs_map[str(int(vf_index))] = mac
+                macs_map[gid_idx_to_vf_idx[gid_index]] = mac
         return macs_map
 
     def _get_vfs_macs_ib_mlnx5(self, pf_mlx_name, vf_idxs):

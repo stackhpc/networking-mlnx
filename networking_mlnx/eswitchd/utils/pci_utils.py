@@ -20,6 +20,7 @@ from oslo_log import log as logging
 
 from networking_mlnx._i18n import _
 from networking_mlnx.eswitchd.common import constants
+from networking_mlnx.eswitchd.common import exceptions
 
 LOG = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class pciUtils(object):
     _VIRTFN_RE = re.compile(r'virtfn(?P<vf_num>\d+)')
     VFS_PATH = ETH_DEV + "/virtfn*"
     PCI_NET_PATH = ETH_DEV + "/virtfn%(vf_num)d/net"
+    IB_DEV_PATH = "/sys/class/infiniband/%(ib_dev)s/device"
+    VF_PCI_DEV_PATH = "/sys/bus/pci/devices/%(pf_pci_addr)s/virtfn%(vf_num)d"
 
     def get_vfs_info(self, pf):
         """Get VFs information
@@ -128,6 +131,35 @@ class pciUtils(object):
             pciUtils.INFINIBAND_PATH))
         dev_info = os.listdir(dev_path)
         return dev_info.pop()
+
+    def get_pci_from_ib_dev(self, ib_dev):
+        """Get PF PCI address from IB device
+
+        :param ib_dev: ib device
+        :return: PCI address associated with the provided IB device
+        :raises: DeviceNotFoundException
+        """
+        pf_dev_path = pciUtils.IB_DEV_PATH % {'ib_dev': ib_dev}
+        if os.path.exists(pf_dev_path):
+            return os.readlink(pf_dev_path).split(os.sep)[-1]
+        raise exceptions.DeviceNotFoundException(
+            "PCI address was not found for IB device %s" % ib_dev)
+
+    def get_vf_from_vf_idx(self, pf_pci, vf_idx):
+        """Get VF PCI address from PF PCI address and VF index
+
+        :param pf_pci: PF PCI address D:B:D.F format
+        :param vf_idx: VF index
+        :return: VF PCI address
+        :raises: DeviceNotFoundException
+        """
+        vf_dev_path = pciUtils.VF_PCI_DEV_PATH % {
+            'pf_pci_addr': pf_pci, 'vf_num': vf_idx}
+        if os.path.exists(vf_dev_path):
+            return os.readlink(vf_dev_path).split(os.sep)[-1]
+        raise exceptions.DeviceNotFoundException(
+            "VF PCI address not found for PF %s VF index %d " % (
+                pf_pci, vf_idx))
 
     def get_eth_port(self, dev):
         """Get network device Port number
