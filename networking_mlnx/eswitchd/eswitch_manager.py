@@ -54,7 +54,8 @@ class PfPciDeviceWrapper(object):
 
     def get_vfs_macs_ib(self, vf_idxs):
         return self.ib_utils.get_vfs_macs_ib(
-            self.mlx_dev_name, self.hca_port, vf_idxs, self.device_type)
+            self.net_dev_name, self.mlx_dev_name, self.hca_port, vf_idxs,
+            self.device_type)
 
     def get_vf_state(self, vf_index):
         # TODO(adrianc) implement

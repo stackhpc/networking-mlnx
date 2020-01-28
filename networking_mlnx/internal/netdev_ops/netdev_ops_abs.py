@@ -49,3 +49,13 @@ class NetDevOperations(object):
         :param guid: 64bit guid str in xx:xx:xx:xx:xx:xx:xx:xx format
                      where x is a hexadecimal digit.
         """
+
+    @abc.abstractmethod
+    def get_vf_guid(self, pf_ifname, vf_idx):
+        """Get vf administrative GUID
+
+        :param pf_ifname: pf netdev name
+        :param vf_idx: vf index
+        :returns guid: 64bit guid str in xx:xx:xx:xx:xx:xx:xx:xx format
+                          where x is a hexadecimal digit.
+        """

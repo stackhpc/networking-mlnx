@@ -18,9 +18,11 @@ import re
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
+from networking_mlnx.eswitchd.common import exceptions
 from networking_mlnx.eswitchd.utils import pci_utils
 from networking_mlnx.internal.netdev_ops import api as net_dev_api
 from networking_mlnx.internal.netdev_ops import constants as netdev_const
+from networking_mlnx.internal.netdev_ops import exceptions as api_exceptions
 from networking_mlnx.internal.sys_ops import api as sys_api
 
 LOG = logging.getLogger(__name__)
@@ -33,6 +35,8 @@ class IbUtils(object):
     DEFAULT_MASK = 0x7fff
     DEFAULT_PKEY = 0xffff
     PKEYS_PATH = "/sys/class/infiniband/%s/ports/%s/pkeys/*"
+    GUID_FMT_MLNX4 = r"^[0-9a-fA-F]{16}$"
+    GUID_FMT_MLNX5 = r"^([0-9a-fA-F]{2}:){7}([0-9A-Fa-f]{2})$"
 
     def _config_vf_pkey(self, ppkey_idx, pkey_idx,
                         pf_mlx_dev, vf_pci_id, hca_port):
@@ -65,9 +69,26 @@ class IbUtils(object):
                 guid = prefix + '00:00:' + suffix
         return guid
 
-    def get_vfs_macs_ib(self, pf_mlx_name, hca_port, vf_idxs, type):
+    def _get_mac_from_guid(self, guid):
+        """Truncate GUID to mac by removing the 4th and 5th bytes.
+
+        :param guid: str formatted in either: xxxxxxxxxxxxxxxx or
+                     xx:xx:xx:xx:xx:xx:xx:xx where 'x' is a hexadecimal digit
+        :return: mac
+        """
+        if re.match(IbUtils.GUID_FMT_MLNX4, guid):
+            mac = ":".join(re.findall('..?', guid[:6] + guid[-6:]))
+        elif re.match(IbUtils.GUID_FMT_MLNX5, guid):
+            mac = guid[:8] + guid[-9:]
+        else:
+            raise exceptions.InvalidGUIDFormatException(guid)
+        return mac
+
+    def get_vfs_macs_ib(self, pf_net_name, pf_mlx_name, hca_port, vf_idxs,
+                        type):
         """Get assigned Infiniband mac address for VFs
 
+        :param pf_net_name: PF net device name
         :param pf_mlx_name: PF IB device name
         :param hca_port: hca port number
         :param vf_idxs: list of VF indexes to get mac address
@@ -78,10 +99,12 @@ class IbUtils(object):
         macs_map = {}
         if type == constants.MLNX4_DEVICE_TYPE:
             macs_map.update(
-                self._get_vfs_macs_ib_mlnx4(pf_mlx_name, hca_port, vf_idxs))
+                self._get_vfs_macs_ib_mlnx4(pf_net_name, pf_mlx_name,
+                                            hca_port, vf_idxs))
         elif type == constants.MLNX5_DEVICE_TYPE:
             macs_map.update(
-                self._get_vfs_macs_ib_mlnx5(pf_mlx_name, vf_idxs))
+                self._get_vfs_macs_ib_mlnx5(pf_net_name, pf_mlx_name,
+                                            vf_idxs))
         return macs_map
 
     def _get_gid_to_vf_idx_mapping(self, pf_ib_dev, hca_port, vf_idxs):
@@ -101,41 +124,60 @@ class IbUtils(object):
             mapping[vf_gid] = vf_idx
         return mapping
 
-    def _get_vfs_macs_ib_mlnx4(self, pf_mlx_name, hca_port, vf_idxs):
-        macs_map = {}
-        gid_idx_to_vf_idx = self._get_gid_to_vf_idx_mapping(
-            pf_mlx_name, hca_port, vf_idxs)
-        gid_idxs = gid_idx_to_vf_idx.keys()
-        guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_name, hca_port,
-                                                  '[1-9]*')
-        paths = glob.glob(guids_path)
-        for path in paths:
-            gid_index = int(path.split('/')[-1])
-            if gid_index not in gid_idxs:
-                continue
-            with open(path) as f:
-                guid = f.readline().strip()
-                if guid == constants.MLNX4_INVALID_GUID:
-                    mac = constants.INVALID_MAC
-                else:
-                    head = guid[:6]
-                    tail = guid[-6:]
-                    mac = ":".join(re.findall('..?', head + tail))
-                macs_map[gid_idx_to_vf_idx[gid_index]] = mac
+    def _get_vfs_ib_mac_netdev_api(self, pf_net_name, vf_idxs):
+        try:
+            macs_map = {}
+            for vf_idx in vf_idxs:
+                guid = net_dev_api.get_vf_guid(pf_net_name, vf_idx)
+                macs_map[vf_idx] = self._get_mac_from_guid(guid)
+            return macs_map
+        except api_exceptions.NetlinkAttrNotFoundError:
+            return None
+
+    def _get_vfs_macs_ib_mlnx4(self, pf_net_name, pf_mlx_name, hca_port,
+                               vf_idxs):
+        macs_map = self._get_vfs_ib_mac_netdev_api(pf_net_name, vf_idxs)
+        # TODO(adrianc): The logic below should be removed once major distros
+        # have kernel based on 5.5.0 or newer.
+        if macs_map is None:
+            LOG.debug("Failed to get vf guid via netdev API, "
+                     "attempting to get vf guid via sysfs.")
+            macs_map = {}
+            gid_idx_to_vf_idx = self._get_gid_to_vf_idx_mapping(
+                pf_mlx_name, hca_port, vf_idxs)
+            gid_idxs = gid_idx_to_vf_idx.keys()
+            guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_name,
+                                                            hca_port,
+                                                            '[1-9]*')
+            paths = glob.glob(guids_path)
+            for path in paths:
+                gid_index = int(path.split('/')[-1])
+                if gid_index not in gid_idxs:
+                    continue
+                with open(path) as f:
+                    guid = f.readline().strip()
+                    if guid == constants.MLNX4_INVALID_GUID:
+                        mac = constants.INVALID_MAC
+                    else:
+                        mac = self._get_mac_from_guid(guid)
+                    macs_map[gid_idx_to_vf_idx[gid_index]] = mac
         return macs_map
 
-    def _get_vfs_macs_ib_mlnx5(self, pf_mlx_name, vf_idxs):
-        macs_map = {}
-        for vf_idx in vf_idxs:
-            guid_path = (
-                constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_name,
-                                                  'vf_num': vf_idx})
-            with open(guid_path) as f:
-                guid = f.readline().strip()
-                head = guid[:8]
-                tail = guid[-9:]
-                mac = head + tail
-            macs_map[vf_idx] = mac
+    def _get_vfs_macs_ib_mlnx5(self, pf_net_name, pf_mlx_name, vf_idxs):
+        macs_map = self._get_vfs_ib_mac_netdev_api(pf_net_name, vf_idxs)
+        # TODO(adrianc): The logic below should be removed once major distros
+        # have kernel based on 5.5.0 or newer.
+        if macs_map is None:
+            LOG.debug("Failed to get vf guid via netdev API, "
+                     "attempting to get vf guid via sysfs.")
+            for vf_idx in vf_idxs:
+                guid_path = (
+                    constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_name,
+                                                      'vf_num': vf_idx})
+                with open(guid_path) as f:
+                    guid = f.readline().strip()
+                    mac = self._get_mac_from_guid(guid)
+                macs_map[vf_idx] = mac
         return macs_map
 
     def config_vf_mac_address(self, pf_net_dev, pf_mlx_dev, vf_idx,
