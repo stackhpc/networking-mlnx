@@ -21,6 +21,7 @@ from networking_mlnx.eswitchd.common import constants
 from networking_mlnx.eswitchd.utils import pci_utils
 from networking_mlnx.internal.netdev_ops import api as net_dev_api
 from networking_mlnx.internal.netdev_ops import constants as netdev_const
+from networking_mlnx.internal.netdev_ops import exceptions as api_exceptions
 from networking_mlnx.internal.sys_ops import api as sys_api
 
 LOG = logging.getLogger(__name__)
@@ -163,6 +164,22 @@ class IbUtils(object):
         else:
             LOG.error("Unsupported vf device type: %s ", vf_device_type)
 
+    def _set_vf_guid_sysfs_mlnx4(self, guid, pf_mlx_dev, vf_pci_slot,
+                                 hca_port):
+        guid_idx = self._get_guid_idx_mlx4(pf_mlx_dev, vf_pci_slot,
+                                           hca_port)
+        path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_dev, hca_port,
+                                                  guid_idx)
+        sys_api.sys_write(path, guid)
+
+    def _set_vf_guid_sysfs_mlnx5(self, guid, pf_mlx_dev, vf_idx):
+        guid_node = constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
+                                                      'vf_num': vf_idx}
+        guid_port = constants.MLNX5_GUID_PORT_PATH % {'module': pf_mlx_dev,
+                                                      'vf_num': vf_idx}
+        for path in (guid_node, guid_port):
+            sys_api.sys_write(path, guid)
+
     def _config_vf_mac_address_mlnx4(self, pf_net_dev, pf_mlx_dev, vf_idx,
                                      vf_pci_slot, hca_port, vguid):
         self._config_vf_pkey(
@@ -171,14 +188,11 @@ class IbUtils(object):
 
         try:
             net_dev_api.set_vf_guid(pf_net_dev, vf_idx, vguid)
-        except Exception as e:
-            LOG.info("Failed to set vf guid via netlink. "
+        except api_exceptions.NetlinkRuntimeError as e:
+            LOG.debug("Failed to set vf guid via netdev API. "
                      "%s, attempting to set vf guid via sysfs", str(e))
-            guid_idx = self._get_guid_idx_mlx4(pf_mlx_dev, vf_pci_slot,
-                                               hca_port)
-            path = constants.MLNX4_ADMIN_GUID_PATH % (
-                pf_mlx_dev, hca_port, guid_idx)
-            sys_api.sys_write(path, vguid)
+            self._set_vf_guid_sysfs_mlnx4(vguid, pf_mlx_dev, vf_pci_slot,
+                                          hca_port)
 
         ppkey_idx = self._get_pkey_idx(
             IbUtils.DEFAULT_PKEY, pf_mlx_dev, hca_port)
@@ -194,15 +208,10 @@ class IbUtils(object):
                                      vf_pci_slot, vguid):
         try:
             net_dev_api.set_vf_guid(pf_net_dev, vf_idx, vguid)
-        except Exception as e:
-            LOG.info("Failed to set vf guid via netlink. "
+        except api_exceptions.NetlinkRuntimeError as e:
+            LOG.debug("Failed to set vf guid via netdev API. "
                      "%s, attempting to set vf guid via sysfs", str(e))
-            guid_node = constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
-                                                          'vf_num': vf_idx}
-            guid_port = constants.MLNX5_GUID_PORT_PATH % {'module': pf_mlx_dev,
-                                                          'vf_num': vf_idx}
-            for path in (guid_node, guid_port):
-                sys_api.sys_write(path, vguid)
+            self._set_vf_guid_sysfs_mlnx5(vguid, pf_mlx_dev, vf_pci_slot)
 
         if vguid == constants.MLNX5_INVALID_GUID:
             net_dev_api.set_vf_admin_state(
