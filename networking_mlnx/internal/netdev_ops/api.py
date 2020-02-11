@@ -52,3 +52,16 @@ def set_vf_guid(pf_ifname, vf_idx, guid):
                  where x is a hexadecimal digit.
     """
     __netdev_ops.set_vf_guid(pf_ifname, vf_idx, guid)
+
+
+def get_vf_guid(pf_ifname, vf_idx):
+    """Get vf administrative GUID
+
+    :param pf_ifname: pf netdev name
+    :param vf_idx: vf index
+    :returns vf_guid: 64bit guid str in xx:xx:xx:xx:xx:xx:xx:xx format where
+                      x is a hexadecimal digit.
+
+    NOTE: This operation does not need elevated privileges.
+    """
+    return __netdev_ops.get_vf_guid(pf_ifname, vf_idx)

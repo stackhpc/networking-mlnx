@@ -29,3 +29,19 @@ class NetlinkRuntimeError(RuntimeError):
     def __init__(self, e):
         message = self.message % {'e': str(e)}
         super(NetlinkRuntimeError, self).__init__(message)
+
+
+class NetlinkAttrNotFoundError(RuntimeError):
+    message = _("Required netlink attribute was not found. %(e)s")
+
+    def __init__(self, e):
+        message = self.message % {'e': str(e)}
+        super(NetlinkAttrNotFoundError, self).__init__(message)
+
+
+class NetlinkUnexpectedAttrValue(RuntimeError):
+    message = _("Unexpected Netlink attribute value. %(e)s")
+
+    def __init__(self, e):
+        message = self.message % {'e': str(e)}
+        super(NetlinkUnexpectedAttrValue, self).__init__(message)
