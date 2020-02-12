@@ -173,7 +173,7 @@ class IbUtils(object):
             for vf_idx in vf_idxs:
                 guid_path = (
                     constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_name,
-                                                      'vf_num': vf_idx})
+                                                      'vf_num': int(vf_idx)})
                 with open(guid_path) as f:
                     guid = f.readline().strip()
                     mac = self._get_mac_from_guid(guid)
@@ -215,9 +215,9 @@ class IbUtils(object):
 
     def _set_vf_guid_sysfs_mlnx5(self, guid, pf_mlx_dev, vf_idx):
         guid_node = constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
-                                                      'vf_num': vf_idx}
+                                                      'vf_num': int(vf_idx)}
         guid_port = constants.MLNX5_GUID_PORT_PATH % {'module': pf_mlx_dev,
-                                                      'vf_num': vf_idx}
+                                                      'vf_num': int(vf_idx)}
         for path in (guid_node, guid_port):
             sys_api.sys_write(path, guid)
 
