@@ -252,7 +252,7 @@ class IbUtils(object):
         except api_exceptions.NetlinkRuntimeError as e:
             LOG.debug("Failed to set vf guid via netdev API. "
                      "%s, attempting to set vf guid via sysfs", str(e))
-            self._set_vf_guid_sysfs_mlnx5(vguid, pf_mlx_dev, vf_pci_slot)
+            self._set_vf_guid_sysfs_mlnx5(vguid, pf_mlx_dev, vf_idx)
 
         if vguid == constants.MLNX5_INVALID_GUID:
             net_dev_api.set_vf_admin_state(
