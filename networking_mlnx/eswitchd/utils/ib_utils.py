@@ -136,31 +136,28 @@ class IbUtils(object):
 
     def _get_vfs_macs_ib_mlnx4(self, pf_net_name, pf_mlx_name, hca_port,
                                vf_idxs):
-        macs_map = self._get_vfs_ib_mac_netdev_api(pf_net_name, vf_idxs)
-        # TODO(adrianc): The logic below should be removed once major distros
-        # have kernel based on 5.5.0 or newer.
-        if macs_map is None:
-            LOG.debug("Failed to get vf guid via netdev API, "
-                     "attempting to get vf guid via sysfs.")
-            macs_map = {}
-            gid_idx_to_vf_idx = self._get_gid_to_vf_idx_mapping(
-                pf_mlx_name, hca_port, vf_idxs)
-            gid_idxs = gid_idx_to_vf_idx.keys()
-            guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_name,
-                                                            hca_port,
-                                                            '[1-9]*')
-            paths = glob.glob(guids_path)
-            for path in paths:
-                gid_index = int(path.split('/')[-1])
-                if gid_index not in gid_idxs:
-                    continue
-                with open(path) as f:
-                    guid = f.readline().strip()
-                    if guid == constants.MLNX4_INVALID_GUID:
-                        mac = constants.INVALID_MAC
-                    else:
-                        mac = self._get_mac_from_guid(guid)
-                    macs_map[gid_idx_to_vf_idx[gid_index]] = mac
+        # NOTE(adrianc): In contrast to MLNX5 devices, it is not expected
+        # that MLNX4 devices will support GET vf GUIDs via netlink, hence we
+        # do not attempt to get them via netdev API (netlink impl).
+        macs_map = {}
+        gid_idx_to_vf_idx = self._get_gid_to_vf_idx_mapping(
+            pf_mlx_name, hca_port, vf_idxs)
+        gid_idxs = gid_idx_to_vf_idx.keys()
+        guids_path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_name,
+                                                        hca_port,
+                                                        '[1-9]*')
+        paths = glob.glob(guids_path)
+        for path in paths:
+            gid_index = int(path.split('/')[-1])
+            if gid_index not in gid_idxs:
+                continue
+            with open(path) as f:
+                guid = f.readline().strip()
+                if guid == constants.MLNX4_INVALID_GUID:
+                    mac = constants.INVALID_MAC
+                else:
+                    mac = self._get_mac_from_guid(guid)
+                macs_map[gid_idx_to_vf_idx[gid_index]] = mac
         return macs_map
 
     def _get_vfs_macs_ib_mlnx5(self, pf_net_name, pf_mlx_name, vf_idxs):
@@ -197,43 +194,29 @@ class IbUtils(object):
         """
         vguid = self._get_guid_from_mac(mac, vf_device_type)
         if vf_device_type == constants.MLNX4_DEVICE_TYPE:
-            self._config_vf_mac_address_mlnx4(pf_net_dev, pf_mlx_dev, vf_idx,
-                                              vf_pci_slot, hca_port, vguid)
+            self._config_vf_mac_address_mlnx4(pf_mlx_dev, vf_pci_slot,
+                                              hca_port, vguid)
         elif (vf_device_type == constants.MLNX5_DEVICE_TYPE):
             self._config_vf_mac_address_mlnx5(pf_net_dev, pf_mlx_dev, vf_idx,
                                               vf_pci_slot, vguid)
         else:
             LOG.error("Unsupported vf device type: %s ", vf_device_type)
 
-    def _set_vf_guid_sysfs_mlnx4(self, guid, pf_mlx_dev, vf_pci_slot,
-                                 hca_port):
-        guid_idx = self._get_guid_idx_mlx4(pf_mlx_dev, vf_pci_slot,
-                                           hca_port)
-        path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_dev, hca_port,
-                                                  guid_idx)
-        sys_api.sys_write(path, guid)
+    def _config_vf_mac_address_mlnx4(self, pf_mlx_dev, vf_pci_slot, hca_port,
+                                     vguid):
+        # NOTE(adrianc): In contrast to MLNX5 devices, it is not expected
+        # that MLNX4 devices will support SET vf GUID via netlink, hence we
+        # do not attempt to set them via netdev API (netlink impl).
 
-    def _set_vf_guid_sysfs_mlnx5(self, guid, pf_mlx_dev, vf_idx):
-        guid_node = constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
-                                                      'vf_num': int(vf_idx)}
-        guid_port = constants.MLNX5_GUID_PORT_PATH % {'module': pf_mlx_dev,
-                                                      'vf_num': int(vf_idx)}
-        for path in (guid_node, guid_port):
-            sys_api.sys_write(path, guid)
-
-    def _config_vf_mac_address_mlnx4(self, pf_net_dev, pf_mlx_dev, vf_idx,
-                                     vf_pci_slot, hca_port, vguid):
         self._config_vf_pkey(
             IbUtils.INVALID_PKEY, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
             vf_pci_slot, hca_port)
 
-        try:
-            net_dev_api.set_vf_guid(pf_net_dev, vf_idx, vguid)
-        except api_exceptions.NetlinkRuntimeError as e:
-            LOG.debug("Failed to set vf guid via netdev API. "
-                     "%s, attempting to set vf guid via sysfs", str(e))
-            self._set_vf_guid_sysfs_mlnx4(vguid, pf_mlx_dev, vf_pci_slot,
-                                          hca_port)
+        guid_idx = self._get_guid_idx_mlx4(pf_mlx_dev, vf_pci_slot,
+                                           hca_port)
+        path = constants.MLNX4_ADMIN_GUID_PATH % (pf_mlx_dev, hca_port,
+                                                  guid_idx)
+        sys_api.sys_write(path, vguid)
 
         ppkey_idx = self._get_pkey_idx(
             IbUtils.DEFAULT_PKEY, pf_mlx_dev, hca_port)
@@ -244,6 +227,14 @@ class IbUtils(object):
         else:
             LOG.error("Can't find partial management pkey for "
                       "%(pf)s:%(dev)s", {'pf': pf_mlx_dev, 'dev': vf_pci_slot})
+
+    def _set_vf_guid_sysfs_mlnx5(self, guid, pf_mlx_dev, vf_idx):
+        guid_node = constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_dev,
+                                                      'vf_num': int(vf_idx)}
+        guid_port = constants.MLNX5_GUID_PORT_PATH % {'module': pf_mlx_dev,
+                                                      'vf_num': int(vf_idx)}
+        for path in (guid_node, guid_port):
+            sys_api.sys_write(path, guid)
 
     def _config_vf_mac_address_mlnx5(self, pf_net_dev, pf_mlx_dev, vf_idx,
                                      vf_pci_slot, vguid):
