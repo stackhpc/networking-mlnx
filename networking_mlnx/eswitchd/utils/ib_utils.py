@@ -167,6 +167,7 @@ class IbUtils(object):
         if macs_map is None:
             LOG.debug("Failed to get vf guid via netdev API, "
                      "attempting to get vf guid via sysfs.")
+            macs_map = {}
             for vf_idx in vf_idxs:
                 guid_path = (
                     constants.MLNX5_GUID_NODE_PATH % {'module': pf_mlx_name,
