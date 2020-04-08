@@ -48,7 +48,8 @@ class IPoIBInterfaceDriver(n_interface.LinuxInterfaceDriver):
             LOG.error("IPoIB root device %s does not exist.", self.root_dev)
 
     def plug_new(self, network_id, port_id, device_name, mac_address,
-                 bridge=None, namespace=None, prefix=None, mtu=None):
+                 bridge=None, namespace=None, prefix=None, mtu=None,
+                 link_up=True):
         """Plugin the interface."""
         ip = ip_lib.IPoIBWrapper(namespace=namespace)
         try:
@@ -56,7 +57,8 @@ class IPoIBInterfaceDriver(n_interface.LinuxInterfaceDriver):
                                     fields=[constants.SEGMENTATION_ID])[0]
             segmentation_id = net.get(constants.SEGMENTATION_ID)
             dev = ip.add_ipoib(device_name, self.root_dev, segmentation_id)
-            dev.link.set_up()
+            if link_up:
+                dev.link.set_up()
         except RuntimeError as e:
             LOG.error("Failed plugging interface '%s' - %s",
                       device_name, str(e))
@@ -257,7 +259,8 @@ class MultiInterfaceDriver(n_interface.LinuxInterfaceDriver):
         return None
 
     def plug_new(self, network_id, port_id, device_name, mac_address,
-                 bridge=None, namespace=None, prefix=None, mtu=None):
+                 bridge=None, namespace=None, prefix=None, mtu=None,
+                 link_up=True):
         """Plugin the interface."""
         network = MultiInterfaceDriver.network_cache.get(network_id)
         physnet = network.get(constants.PHYSICAL_NETWORK)
@@ -267,7 +270,7 @@ class MultiInterfaceDriver(n_interface.LinuxInterfaceDriver):
         try:
             driver = self.drivers[physnet]
             driver.plug_new(network_id, port_id, device_name, mac_address,
-                            bridge, namespace, prefix, mtu)
+                            bridge, namespace, prefix, mtu, link_up)
         except KeyError:
             LOG.error("Interface driver not found for physnet: %s", physnet)
 
