@@ -78,11 +78,10 @@ def get_all_db_rows_by_state(session, state):
 # might both succeed in changing the same row to pending, but at least one
 # of them will get a deadlock from Galera and will have to retry the operation.
 @db_api.retry_db_errors
-def get_oldest_pending_db_row_with_lock(session,
-                                        fabric_type=sdn_const.FABRIC_ETH):
+def get_oldest_pending_db_row_with_lock(session):
     with session.begin():
         row = session.query(sdn_journal_db.SdnJournal).filter_by(
-            state=sdn_const.PENDING, fabric_type=fabric_type).order_by(
+            state=sdn_const.PENDING).order_by(
             asc(sdn_journal_db.SdnJournal.last_retried)).with_for_update(
         ).first()
         if row:
@@ -136,14 +135,13 @@ def delete_row(session, row=None, row_id=None):
 
 @oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES)
 def create_pending_row(session, object_type, object_uuid,
-                       operation, data, fabric_type=sdn_const.FABRIC_ETH):
+                       operation, data):
     data = jsonutils.dumps(data)
     row = sdn_journal_db.SdnJournal(object_type=object_type,
                                     object_uuid=object_uuid,
                                     operation=operation, data=data,
                                     created_at=func.now(),
-                                    state=sdn_const.PENDING,
-                                    fabric_type=fabric_type)
+                                    state=sdn_const.PENDING)
     session.add(row)
     # Keep session flush for unit tests. NOOP for L2/L3 events since calls are
     # made inside database session transaction with subtransactions=True.

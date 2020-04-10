@@ -35,5 +35,3 @@ class SdnJournal(model_base.BASEV2, model_base.HasId):
     created_at = sa.Column(sa.DateTime, server_default=sa.func.now())
     last_retried = sa.Column(sa.TIMESTAMP, server_default=sa.func.now(),
                              onupdate=sa.func.now())
-    fabric_type = sa.Column(sa.Enum(sdn_const.FABRIC_ETH, sdn_const.FABRIC_IB),
-                            nullable=False, default=sdn_const.FABRIC_ETH)

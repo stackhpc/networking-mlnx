@@ -42,9 +42,9 @@ def call_thread_on_end(func):
 
 
 def record(db_session, object_type, object_uuid, operation, data,
-           context=None, fabric_type=sdn_const.FABRIC_ETH):
+           context=None):
     db.create_pending_row(db_session, object_type, object_uuid, operation,
-                          data, fabric_type)
+                          data)
 
 
 class SdnJournalThread(object):
