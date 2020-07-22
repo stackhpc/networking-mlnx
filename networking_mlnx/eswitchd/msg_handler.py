@@ -27,7 +27,7 @@ class BasicMessageHandler(object):
         self.msg = msg
 
     def execute(self):
-        raise Exception(_("execute method MUST be implemented!"))
+        raise Exception("execute method MUST be implemented!")
 
     def validate(self):
         ret = True
