@@ -114,7 +114,7 @@ class SDNMechanismDriver(api.MechanismDriver):
         # `bind_normal_ports_physnets` must be a subset of `physical_networks`
         if (cfg.CONF.sdn.bind_normal_ports and
                 not (sdn_const.ANY in cfg.CONF.sdn.physical_networks) and
-                _is_sublist(
+                not _is_sublist(
                     cfg.CONF.sdn.bind_normal_ports_physnets,
                     cfg.CONF.sdn.physical_networks)):
             raise sdn_excpt.SDNDriverConfError(

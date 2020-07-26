@@ -32,6 +32,7 @@ from networking_mlnx.journal import journal
 from networking_mlnx.plugins.ml2.drivers.sdn import client
 from networking_mlnx.plugins.ml2.drivers.sdn import config
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
+from networking_mlnx.plugins.ml2.drivers.sdn import exceptions as sdn_excpt
 from networking_mlnx.plugins.ml2.drivers.sdn import sdn_mech_driver
 from networking_mlnx.plugins.ml2.drivers.sdn import utils as sdn_utils
 
@@ -77,13 +78,19 @@ class SdnTestCase(SdnConfigBase):
 
 class SdnMechanismConfigTests(testlib_api.SqlTestCase):
 
-    def _set_config(self, url='http://127.0.0.1/neo',
-                    username='admin',
-                    password='123456',
-                    sync_enabled=True):
+    def setUp(self):
+        super(SdnMechanismConfigTests, self).setUp()
+        self.mech = sdn_mech_driver.SDNMechanismDriver()
         self.conf_fixture = self.useFixture(fixture_config.Config())
         self.conf = self.conf_fixture.conf
         self.conf.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
+        self._set_config()
+
+    def _set_config(self, url='http://127.0.0.1/neo',
+                    username='admin',
+                    password='123456',
+                    sync_enabled=True,
+                    **additional_config):
         self.conf.set_override('mechanism_drivers',
                                ['logger', MECHANISM_DRIVER_NAME],
                                'ml2')
@@ -92,6 +99,8 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
         self.conf.set_override('password', password, sdn_const.GROUP_OPT)
         self.conf.set_override('sync_enabled', sync_enabled,
                                sdn_const.GROUP_OPT)
+        for k, v in additional_config.items():
+            self.conf.set_override(k, v, sdn_const.GROUP_OPT)
 
     def _test_missing_config(self, **kwargs):
         self._set_config(**kwargs)
@@ -115,6 +124,39 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
         self._set_config(url=None, username=None, password=None,
                          sync_enabled=False)
         plugin.Ml2Plugin()
+
+    def test__check_physnet_confs_bind_normal_ports_false_any_physnet(self):
+        self._set_config(physical_networks=['*'],
+                         bind_normal_ports=False,
+                         bind_normal_ports_physnets=["testphys1"])
+        # Check should essentially always pass as bind_normal_ports is False
+        self.mech._check_physnet_confs()
+
+    def test__check_physnet_confs_bind_normal_ports_false_with_physnet(self):
+        self._set_config(physical_networks=['testphys1'],
+                         bind_normal_ports=False,
+                         bind_normal_ports_physnets=["testphys2"])
+        # Check should essentially always pass as bind_normal_ports is False
+        self.mech._check_physnet_confs()
+
+    def test__check_physnet_confs_any_physnet(self):
+        self._set_config(physical_networks=['*'],
+                         bind_normal_ports=True,
+                         bind_normal_ports_physnets=["testphys1"])
+        self.mech._check_physnet_confs()
+
+    def test__check_physnet_confs_with_physnets(self):
+        self._set_config(physical_networks=['testphys1'],
+                         bind_normal_ports=True,
+                         bind_normal_ports_physnets=["testphys1"])
+        self.mech._check_physnet_confs()
+
+    def test__check_physnet_confs_with_physnets_no_subset(self):
+        self._set_config(physical_networks=['testphys1', 'testphys2'],
+                         bind_normal_ports=True,
+                         bind_normal_ports_physnets=["testphys3"])
+        self.assertRaises(sdn_excpt.SDNDriverConfError,
+                          self.mech._check_physnet_confs)
 
     class SdnMechanismTestBasicGet(test_plugin.TestMl2BasicGet,
                                    SdnTestCase):
