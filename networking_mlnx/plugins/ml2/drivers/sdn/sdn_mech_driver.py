@@ -77,9 +77,9 @@ class SDNMechanismDriver(api.MechanismDriver):
     """
 
     supported_device_owners = [neutron_const.DEVICE_OWNER_DHCP,
-                               neutron_const.DEVICE_OWNER_ROUTER_INTF,
-                               neutron_const.DEVICE_OWNER_ROUTER_GW,
-                               neutron_const.DEVICE_OWNER_FLOATINGIP]
+                               neutron_const.DEVICE_OWNER_FLOATINGIP,
+                               neutron_const.DEVICE_OWNER_ROUTER_HA_INTF] + \
+        list(neutron_const.ROUTER_INTERFACE_OWNERS_SNAT)
 
     def initialize(self):
         if self._is_sdn_sync_enabled():
