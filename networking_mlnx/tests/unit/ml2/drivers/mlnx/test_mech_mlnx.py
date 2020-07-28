@@ -19,9 +19,15 @@ from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import context
 from neutron_lib.plugins.ml2 import api
+from oslo_config import cfg
+from oslo_config import fixture as fixture_config
 from oslo_utils import uuidutils
 
+from networking_mlnx.plugins.ml2.drivers.mlnx import config
 from networking_mlnx.plugins.ml2.drivers.mlnx import mech_mlnx
+
+cfg.CONF.import_group("mlnx",
+                      'networking_mlnx.plugins.ml2.drivers.mlnx')
 
 
 class MlnxMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
@@ -128,11 +134,16 @@ class FakeContext(base.FakePortContext):
 class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
                                   test_plugin.Ml2PluginV2TestCase):
     mechanism_drivers = ['mlnx_infiniband']
-    expected_client_id = (
-        "ff:00:00:00:00:00:02:00:00:02:c9:00:01:23:45:00:00:67:89:ab")
+    expected_client_id_hardware = (mech_mlnx.HARDWARE_CLIENT_ID_PREFIX +
+        '01:23:45:00:00:67:89:ab')
+    expected_client_id_legacy = (mech_mlnx.LEGACY_CLIENT_ID_PREFIX +
+        "01:23:45:00:00:67:89:ab")
 
     def setUp(self):
         super(MlnxMechanismIbPortTestCase, self).setUp()
+        self.conf_fixture = self.useFixture(fixture_config.Config())
+        self.conf = self.conf_fixture.conf
+        self.conf.register_opts(config.mlnx_opts, "mlnx")
 
     def _get_context(self):
         VLAN_SEGMENTS = [{api.ID: 'vlan_segment_id',
@@ -153,12 +164,22 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
                            original=original_context,
                            current=current_context)
 
-    def test_precommit_same_host_id(self):
+    def test_precommit_same_host_id_with_client_id_hardware(self):
+        self.conf.set_override('client_id_hardware', True, "mlnx")
         _context = self._get_context()
         with mock.patch('neutron_lib.plugins.directory.get_plugin'):
             self.driver.update_port_precommit(_context)
         self.assertIsNotNone(_context.current.get('extra_dhcp_opts'))
-        self.assertEqual(self.expected_client_id,
+        self.assertEqual(self.expected_client_id_hardware,
+                         _context.current['extra_dhcp_opts'][0]['opt_value'])
+
+    def test_precommit_same_host_id_with_client_id_legacy(self):
+        self.conf.set_override('client_id_hardware', False, "mlnx")
+        _context = self._get_context()
+        with mock.patch('neutron_lib.plugins.directory.get_plugin'):
+            self.driver.update_port_precommit(_context)
+        self.assertIsNotNone(_context.current.get('extra_dhcp_opts'))
+        self.assertEqual(self.expected_client_id_legacy,
                          _context.current['extra_dhcp_opts'][0]['opt_value'])
 
     def test_percommit_migrete_port(self):

@@ -21,9 +21,16 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as p_constants
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
+from oslo_config import cfg
+
+from networking_mlnx.plugins.ml2.drivers.mlnx import config
+
+cfg.CONF.register_opts(config.mlnx_opts, "mlnx")
 
 AGENT_TYPE_MLNX = 'Mellanox plugin agent'
 VIF_TYPE_IB_HOSTDEV = 'ib_hostdev'
+LEGACY_CLIENT_ID_PREFIX = 'ff:00:00:00:00:00:02:00:00:02:c9:00:'
+HARDWARE_CLIENT_ID_PREFIX = '20:'
 
 
 class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
@@ -61,12 +68,19 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                                 self.vif_details)
 
     def _gen_client_id(self, port):
-        _PREFIX = 'ff:00:00:00:00:00:02:00:00:02:c9:00:'
+        if cfg.CONF.mlnx.client_id_hardware:
+            return self._gen_client_id_with_prefix(port,
+                HARDWARE_CLIENT_ID_PREFIX)
+        else:
+            return self._gen_client_id_with_prefix(port,
+                LEGACY_CLIENT_ID_PREFIX)
+
+    def _gen_client_id_with_prefix(self, port, prefix):
         _MIDDLE = ':00:00:'
         mac_address = port["mac_address"]
         mac_first = mac_address[:8]
         mac_last = mac_address[9:]
-        client_id = ''.join([_PREFIX, mac_first, _MIDDLE, mac_last])
+        client_id = ''.join([prefix, mac_first, _MIDDLE, mac_last])
         return client_id
 
     def _gen_client_id_opt(self, port):
