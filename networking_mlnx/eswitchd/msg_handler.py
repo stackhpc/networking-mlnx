@@ -40,9 +40,7 @@ class BasicMessageHandler(object):
         return ret
 
     def validate_vnic_type(self, vnic_type):
-        if vnic_type in (constants.VIF_TYPE_HOSTDEV, ):
-            return True
-        return False
+        return vnic_type == constants.VIF_TYPE_HOSTDEV
 
     def build_response(self, status, reason=None, response=None):
         if status:
@@ -65,11 +63,14 @@ class PlugVnic(BasicMessageHandler):
         vnic_mac = (self.msg['vnic_mac']).lower()
         dev_name = self.msg['dev_name']
 
-        dev = eswitch_handler.plug_nic(fabric, device_id, vnic_mac, dev_name)
-        if dev:
-            return self.build_response(True, response={'dev': dev})
-        else:
-            return self.build_response(False, reason='Plug vnic failed')
+        try:
+            dev = eswitch_handler.plug_nic(
+                fabric, device_id, vnic_mac, dev_name)
+            if dev:
+                return self.build_response(True, response={'dev': dev})
+        except Exception as e:
+            LOG.error("Plug vnic failed - %s", str(e))
+        return self.build_response(False, reason='Plug vnic failed')
 
 
 class DetachVnic(BasicMessageHandler):
@@ -81,11 +82,13 @@ class DetachVnic(BasicMessageHandler):
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
         vnic_mac = (self.msg['vnic_mac']).lower()
-        dev = eswitch_handler.delete_port(fabric, vnic_mac)
-        if dev:
-            return self.build_response(True, response={'dev': dev})
-        else:
-            return self.build_response(True, response={})
+        try:
+            dev = eswitch_handler.delete_port(fabric, vnic_mac)
+            if dev:
+                return self.build_response(True, response={'dev': dev})
+        except Exception as e:
+            LOG.warning("Detach vnic failed - %s", str(e))
+        return self.build_response(True, response={})
 
 
 class SetVLAN(BasicMessageHandler):
@@ -98,13 +101,14 @@ class SetVLAN(BasicMessageHandler):
         fabric = self.msg['fabric']
         pci_slot = self.msg['pci_slot']
         vlan = int(self.msg['vlan'])
-        ret = eswitch_handler.set_vlan(fabric, pci_slot, vlan)
-        reason = None
-        if not ret:
-            reason = 'Set VLAN Failed'
-        if reason:
-            return self.build_response(False, reason=reason)
-        return self.build_response(True, response={})
+        try:
+            ret = eswitch_handler.set_vlan(fabric, pci_slot, vlan)
+            if ret:
+                return self.build_response(True, response={})
+        except Exception as e:
+            LOG.error("Set Vlan failed - %s", str(e))
+        reason = 'Set VLAN Failed'
+        return self.build_response(False, reason=reason)
 
 
 class GetVnics(BasicMessageHandler):
@@ -119,7 +123,10 @@ class GetVnics(BasicMessageHandler):
             fabrics = None
         else:
             fabrics = [fabric]
-        vnics = eswitch_handler.get_vnics(fabrics)
+        try:
+            vnics = eswitch_handler.get_vnics(fabrics)
+        except Exception as e:
+            LOG.warning("GetVnics failed - %s", str(e))
         return self.build_response(True, response=vnics)
 
 
@@ -170,7 +177,10 @@ class PortUp(BasicMessageHandler):
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
         pci_slot = self.msg['pci_slot']
-        eswitch_handler.port_up(fabric, pci_slot)
+        try:
+            eswitch_handler.port_up(fabric, pci_slot)
+        except Exception as e:
+            LOG.warning("Port up - %s", str(e))
         return self.build_response(True, response={})
 
 
@@ -183,7 +193,10 @@ class PortDown(BasicMessageHandler):
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
         pci_slot = self.msg['pci_slot']
-        eswitch_handler.port_down(fabric, pci_slot)
+        try:
+            eswitch_handler.port_down(fabric, pci_slot)
+        except Exception as e:
+            LOG.warning("Port down failed - %s", str(e))
         return self.build_response(True, response={})
 
 

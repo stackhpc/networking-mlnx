@@ -62,8 +62,7 @@ def add_port(args):
                               args.vnic_type, args.dev_name)
 
     except exceptions.MlxException as e:
-        sys.stderr.write("Error in add-port command")
-        sys.stderr.write(e.message)
+        sys.stderr.write("Error in add-port command " + e.message)
         sys.exit(1)
     sys.stdout.write(dev)
     sys.exit(0)
@@ -73,8 +72,7 @@ def del_port(args):
     try:
         client.deallocate_nic(args.vnic_mac, args.fabric)
     except exceptions.MlxException as e:
-        sys.stderr.write("Error in del-port command")
-        sys.stderr.write(e.message)
+        sys.stderr.write("Error in del-port command " + e.message)
         sys.exit(1)
     sys.exit(0)
 

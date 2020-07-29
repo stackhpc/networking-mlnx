@@ -87,7 +87,7 @@ class MlxEswitchDaemon(object):
                 msg = jsonutils.dumps(result)
             except Exception as e:
                 LOG.exception("Exception during message handling - %s", e)
-                msg = str(e)
+                msg = jsonutils.dumps(str(e))
             sender.send_string(msg)
 
     def daemon_loop(self):
