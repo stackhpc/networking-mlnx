@@ -203,19 +203,18 @@ class SdnJournalThread(object):
                             db.update_db_row_state(
                                 session, row, sdn_const.COMPLETED)
                             continue
-                        elif job_status in ("Pending", "Running"):
+                        if job_status in ("Pending", "Running"):
                             LOG.debug("NEO Job id %(job_id)s is %(status)s "
                                       "continue monitoring",
                                       {'job_id': row.job_id,
                                        'status': job_status})
                             continue
-                        else:
-                            LOG.error("NEO Job id %(job_id)s, failed with"
-                                      " %(status)s",
-                                      {'job_id': row.job_id,
-                                       'status': job_status})
-                            db.update_db_row_state(
-                                session, row, sdn_const.PENDING)
+                        LOG.error("NEO Job id %(job_id)s, failed with"
+                                  " %(status)s",
+                                  {'job_id': row.job_id,
+                                  'status': job_status})
+                        db.update_db_row_state(
+                            session, row, sdn_const.PENDING)
                     except (ValueError, AttributeError):
                         LOG.error("failed to extract response for job"
                                   "id %s", row.job_id)
