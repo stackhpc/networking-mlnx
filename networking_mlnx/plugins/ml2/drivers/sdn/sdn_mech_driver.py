@@ -223,7 +223,7 @@ class SDNMechanismDriver(api.MechanismDriver):
         dhcp_opts = port.get('extra_dhcp_opts', [])
         for dhcp_opt in dhcp_opts:
             if (isinstance(dhcp_opt, dict) and
-                    dhcp_opt.get('opt_name') == old_opt_name):
+                    dhcp_opt.get('opt_name') == str(old_opt_name)):
                 dhcp_opt['opt_name'] = new_opt_name
                 return
 
