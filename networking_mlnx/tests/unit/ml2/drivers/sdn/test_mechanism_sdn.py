@@ -14,8 +14,6 @@
 import datetime
 
 import mock
-import requests
-
 from neutron.plugins.ml2 import plugin
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron.tests.unit import testlib_api
@@ -25,6 +23,7 @@ from oslo_config import cfg
 from oslo_config import fixture as fixture_config
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
+import requests
 
 from networking_mlnx.db import db
 from networking_mlnx.journal import cleanup

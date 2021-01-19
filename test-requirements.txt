@@ -1,29 +1,20 @@
 # The order of packages is significant, because pip processes them in the order
 # of appearance. Changing the order has an impact on the overall integration
 # process, which may cause wedges in the gate later.
-hacking>=3.0.1,<3.1.0 # Apache-2.0
-bandit!=1.6.0,>=1.1.0 # Apache-2.0
 coverage!=4.4,>=4.0 # Apache-2.0
 fixtures>=3.0.0 # Apache-2.0/BSD
-flake8-import-order==0.12 # LGPLv3
 python-subunit>=1.0.0 # Apache-2.0/BSD
 testtools>=2.2.0 # MIT
 testresources>=2.0.0 # Apache-2.0/BSD
 testscenarios>=0.4 # Apache-2.0/BSD
 WebTest>=2.0.27 # MIT
+oslotest>=3.2.0 # Apache-2.0
+stestr>=1.0.0 # Apache-2.0
 reno>=3.1.0 # Apache-2.0
 ddt>=1.0.1 # MIT
-astroid==2.3.3 # LGPLv2.1
-pylint==2.4.4 # GPLv2
+astroid==2.4.0 # LGPLv2.1
 isort==4.3.21 # MIT
 # Needed to run DB commands in virtualenvs
-bashate>=0.5.1 # Apache-2.0
-cliff>=1.15.0 # Apache-2.0
-discover
+PyMySQL>=0.7.6 # MIT License
 mock>=1.2
-requests-mock>=0.7.0  # Apache-2.0
-sphinx!=1.2.0,!=1.3b1,<1.3,>=1.1.2 # BSD
-oslosphinx!=3.4.0,>=2.5.0 # Apache-2.0
-oslotest>=3.2.0 # Apache-2.0
-testrepository>=0.0.18
-os-testr>=1.0.0 # Apache-2.0
+
