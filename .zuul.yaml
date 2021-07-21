@@ -1,3 +1,3 @@
 - project:
     templates:
-        - openstack-python3-wallaby-jobs-neutron
+        - openstack-python3-xena-jobs-neutron
