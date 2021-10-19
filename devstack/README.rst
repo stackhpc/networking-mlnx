@@ -35,9 +35,8 @@
 
     [[post-config|/etc/neutron/plugins/ml2/ml2_conf.ini]]
     [sdn]
-    url = http://<sdn_provider_ip>/neo
+    url = http://<sdn_provider_ip>/ufmRestV3
     domain = cloudx
-    username = admin
-    password = admin
+    token = abcdef
 
 5) run ``stack.sh``
