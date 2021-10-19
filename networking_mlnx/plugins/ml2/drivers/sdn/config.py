@@ -30,13 +30,10 @@ sdn_opts = [
                           "(for example: cloudx)"),
                    default='cloudx'
                    ),
-        cfg.StrOpt('username',
-                   help=_("HTTP username for authentication."),
-                   ),
-        cfg.StrOpt('password',
-                   help=_("HTTP password for authentication."),
+        cfg.StrOpt('token',
+                   help=_("HTTPS token for authentication."),
                    secret=True,
-                   default='123456'
+                   default="abcdef",
                    ),
         cfg.IntOpt('timeout',
                    help=_("HTTP timeout in seconds."),
@@ -81,7 +78,7 @@ sdn_opts = [
                            "conjuction with bind_normal_ports. "
                            "The list must be a subset of physical_networks")),
         cfg.BoolOpt('cert_verify',
-                    default="True",
+                    default="False",
                     help=_("Use certificates to verify connections.")),
         cfg.StrOpt('cert_path',
                    default="",

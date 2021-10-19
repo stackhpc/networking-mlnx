@@ -56,7 +56,7 @@ class TestClient(base.TestCase):
 
     def test_cert_verify_default(self):
         test_client = client.SdnRestClient.create_client()
-        self.assertEqual(True, test_client.verify)
+        self.assertEqual(False, test_client.verify)
 
     def test_cert_verify_true(self):
         self.conf_fixture.config(cert_verify=True,
@@ -171,10 +171,7 @@ class TestClient(base.TestCase):
                                                expected_url,
                                                None)
 
-    @mock.patch('networking_mlnx.plugins.ml2.drivers.'
-                'sdn.client.SdnRestClient._get_session',
-                return_value=mock.Mock())
-    def test_request_bad_data(self, mocked_get_session):
+    def test_request_bad_data(self):
         # non serialized json data
         data = self
         self.assertRaises(ValueError,

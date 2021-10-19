@@ -55,9 +55,10 @@ class SdnConfigBase(test_plugin.Ml2PluginV2TestCase):
         self.conf.set_override('mechanism_drivers',
                               ['logger', MECHANISM_DRIVER_NAME],
                               'ml2')
-        self.conf.set_override('url', 'http://127.0.0.1/neo',
+        self.conf.set_override('url', 'http://127.0.0.1/ufmRestV3',
                                sdn_const.GROUP_OPT)
-        self.conf.set_override('username', 'admin', sdn_const.GROUP_OPT)
+        self.conf.set_override('token', 'abcdef', sdn_const.GROUP_OPT)
+        self.conf.set_override('cert_verify', False, sdn_const.GROUP_OPT)
 
 
 class SdnTestCase(SdnConfigBase):
@@ -85,17 +86,18 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
         self.conf.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
         self._set_config()
 
-    def _set_config(self, url='http://127.0.0.1/neo',
-                    username='admin',
-                    password='123456',
+    def _set_config(self, url='http://127.0.0.1/ufmRestV3',
+                    token='abcdef',
+                    cert_verify=False,
                     sync_enabled=True,
                     **additional_config):
         self.conf.set_override('mechanism_drivers',
                                ['logger', MECHANISM_DRIVER_NAME],
                                'ml2')
         self.conf.set_override('url', url, sdn_const.GROUP_OPT)
-        self.conf.set_override('username', username, sdn_const.GROUP_OPT)
-        self.conf.set_override('password', password, sdn_const.GROUP_OPT)
+        self.conf.set_override('token', token, sdn_const.GROUP_OPT)
+        self.conf.set_override('cert_verify', False, sdn_const.GROUP_OPT)
+
         self.conf.set_override('sync_enabled', sync_enabled,
                                sdn_const.GROUP_OPT)
         for k, v in additional_config.items():
@@ -113,14 +115,11 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
     def test_missing_url_raises_exception(self):
         self._test_missing_config(url=None)
 
-    def test_missing_username_raises_exception(self):
-        self._test_missing_config(username=None)
-
-    def test_missing_password_raises_exception(self):
-        self._test_missing_config(password=None)
+    def test_missing_token_raises_exception(self):
+        self._test_missing_config(token=None)
 
     def test_missing_config_ok_when_disabled(self):
-        self._set_config(url=None, username=None, password=None,
+        self._set_config(url=None, token=None,
                          sync_enabled=False)
         plugin.Ml2Plugin()
 
@@ -336,54 +335,49 @@ class SdnDriverTestCase(SdnConfigBase):
 
         request_response = self._get_mock_request_response(
             status_code, job_url)
-        if expected_calls == 4 and status_code < 400:
+        if expected_calls == 2 and status_code < 400:
             job_url2 = 'app/jobs/' + uuidutils.generate_uuid()
-            urlpath2 = sdn_utils.strings_to_url(
-                cfg.CONF.sdn.url, job_url)
             request_response.json = mock.Mock(
                 side_effect=[job_url, job_url2,
                 {"Status": "Completed"}, {"Status": "Completed"}])
-        with mock.patch('requests.Session.request',
+        with mock.patch('requests.request',
                         return_value=request_response) as mock_method:
 
             method(exit_after_run=True)
-            login_args = mock.call(
-                sdn_const.POST, mock.ANY,
-                headers=sdn_const.LOGIN_HTTP_HEADER,
-                data=mock.ANY, timeout=cfg.CONF.sdn.timeout)
             job_get_args = mock.call(
                 sdn_const.GET, data=None,
-                headers=sdn_const.JSON_HTTP_HEADER,
-                url=urlpath, timeout=cfg.CONF.sdn.timeout)
+                headers={"Authorization": "Basic {0}".format(
+                    cfg.CONF.sdn.token), **sdn_const.JSON_HTTP_HEADER},
+                url=urlpath, timeout=cfg.CONF.sdn.timeout,
+                verify=cfg.CONF.sdn.cert_verify)
+
             if status_code < 400:
                 if expected_calls:
                     operation_args = mock.call(
-                        headers=sdn_const.JSON_HTTP_HEADER,
-                        timeout=cfg.CONF.sdn.timeout, *args, **kwargs)
-                    if expected_calls == 4:
+                        headers={"Authorization": "Basic {0}".format(
+                            cfg.CONF.sdn.token),
+                            **sdn_const.JSON_HTTP_HEADER},
+                        timeout=cfg.CONF.sdn.timeout, *args, **kwargs,
+                        verify=cfg.CONF.sdn.cert_verify)
+                    if expected_calls == 2:
                         urlpath2 = sdn_utils.strings_to_url(
                             cfg.CONF.sdn.url, job_url2)
                         job_get_args2 = mock.call(
                             sdn_const.GET, data=None,
-                            headers=sdn_const.JSON_HTTP_HEADER,
-                            url=urlpath2, timeout=cfg.CONF.sdn.timeout)
+                            headers={"Authorization": "Basic {0}".format(
+                                cfg.CONF.sdn.token),
+                                **sdn_const.JSON_HTTP_HEADER},
+                            url=urlpath2, timeout=cfg.CONF.sdn.timeout,
+                            verify=cfg.CONF.sdn.cert_verify)
                         self.assertEqual(
-                            login_args, mock_method.mock_calls[4])
+                            job_get_args, mock_method.mock_calls[2])
                         self.assertEqual(
-                            job_get_args, mock_method.mock_calls[5])
-                        self.assertEqual(
-                            login_args, mock_method.mock_calls[6])
-                        self.assertEqual(
-                            job_get_args2, mock_method.mock_calls[7])
+                            job_get_args2, mock_method.mock_calls[3])
                     else:
                         self.assertEqual(
-                            login_args, mock_method.mock_calls[0])
+                            operation_args, mock_method.mock_calls[0])
                         self.assertEqual(
-                            operation_args, mock_method.mock_calls[1])
-                        self.assertEqual(
-                            login_args, mock_method.mock_calls[2])
-                        self.assertEqual(
-                            job_get_args, mock_method.mock_calls[3])
+                            job_get_args, mock_method.mock_calls[1])
 
                 # we need to reduce the login call_cout
                 self.assertEqual(expected_calls * 2, mock_method.call_count)
@@ -410,7 +404,7 @@ class SdnDriverTestCase(SdnConfigBase):
         self.assertEqual(context.current['id'], row['object_uuid'])
 
     def _test_thread_processing(self, operation, object_type,
-                                expected_calls=2):
+                                expected_calls=1):
         status_codes = {sdn_const.POST: requests.codes.created,
                         sdn_const.PUT: requests.codes.ok,
                         sdn_const.DELETE: requests.codes.no_content}
@@ -465,7 +459,7 @@ class SdnDriverTestCase(SdnConfigBase):
         # Create object_type database row and process. This results in both
         # the object_type and network rows being processed.
         self._test_thread_processing(sdn_const.POST, object_type,
-                                     expected_calls=4)
+                                     expected_calls=2)
 
         # Verify both rows are now marked as completed.
         rows = db.get_all_db_rows_by_state(self.db_session,
@@ -614,7 +608,7 @@ class SdnDriverTestCase(SdnConfigBase):
         self._decrease_row_created_time(last_row)
 
         # create 1 more operation to trigger the sync thread
-        # verify that there are no calls to NEO controller, because the
+        # verify that there are no calls to UFM controller, because the
         # first row was not valid (exit_after_run = true)
         self._test_thread_processing(sdn_const.PUT,
                                      sdn_const.NETWORK, expected_calls=0)

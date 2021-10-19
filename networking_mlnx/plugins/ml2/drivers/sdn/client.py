@@ -31,29 +31,29 @@ cfg.CONF.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
 
 class SdnRestClient(object):
 
-    MANDATORY_ARGS = ('url', 'username', 'password')
+    MANDATORY_ARGS = ('url', 'token')
 
     @classmethod
     def create_client(cls):
         return cls(
             cfg.CONF.sdn.url,
             cfg.CONF.sdn.domain,
-            cfg.CONF.sdn.username,
-            cfg.CONF.sdn.password,
             cfg.CONF.sdn.timeout,
             cfg.CONF.sdn.cert_verify,
-            cfg.CONF.sdn.cert_path)
+            cfg.CONF.sdn.cert_path,
+            cfg.CONF.sdn.token)
 
-    def __init__(self, url, domain, username, password, timeout,
-                 verify, cert_path):
+    def __init__(self, url, domain, timeout,
+                 verify, cert_path, token):
         self.url = url
         self.domain = domain
         self.timeout = timeout
-        self.username = username
-        self.password = password
+        self.token = token
         self._validate_mandatory_params_exist()
         self.url.rstrip("/")
         self.verify = verify
+        self.headers = {"Authorization": "Basic {0}".format(self.token),
+                        **sdn_const.JSON_HTTP_HEADER}
         if verify:
             self.verify = self._get_cert(cert_path)
 
@@ -73,24 +73,6 @@ class SdnRestClient(object):
                 raise cfg.RequiredOptError(
                     arg, cfg.OptGroup(sdn_const.GROUP_OPT))
 
-    def _get_session(self):
-        login_url = sdn_utils.strings_to_url(str(self.url), "login")
-        login_data = "username=%s&password=%s" % (self.username,
-                                                  self.password)
-        login_headers = sdn_const.LOGIN_HTTP_HEADER
-        try:
-            session = requests.session()
-            session.verify = self.verify
-            LOG.debug("Login to SDN Provider. Login URL %(url)s",
-                    {'url': login_url})
-            r = session.request(sdn_const.POST, login_url, data=login_data,
-                                headers=login_headers, timeout=self.timeout)
-            LOG.debug("request status: %d", r.status_code)
-            r.raise_for_status()
-        except Exception as e:
-            raise sdn_exc.SDNLoginError(login_url=login_url, msg=e)
-        return session
-
     def get(self, urlpath='', data=None):
         urlpath = sdn_utils.strings_to_url(self.url, urlpath)
         return self.request(sdn_const.GET, urlpath, data)
@@ -109,13 +91,12 @@ class SdnRestClient(object):
 
     def request(self, method, urlpath='', data=None):
         data = jsonutils.dumps(data, indent=2) if data else None
-        session = self._get_session()
-
         LOG.debug("Sending METHOD %(method)s URL %(url)s JSON %(data)s",
                   {'method': method, 'url': urlpath, 'data': data})
-        return self._check_response(session.request(
-                method, url=str(urlpath), headers=sdn_const.JSON_HTTP_HEADER,
-                data=data, timeout=self.timeout), method)
+
+        return self._check_response(requests.request(
+                method, url=str(urlpath), headers=self.headers,
+                data=data, verify=self.verify, timeout=self.timeout), method)
 
     def _check_response(self, response, method):
         try:

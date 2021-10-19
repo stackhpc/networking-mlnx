@@ -126,7 +126,7 @@ class SdnJournalThread(object):
                      {'operation': row.operation, 'type': row.object_type,
                       'uuid': row.object_uuid})
 
-            # Add code to sync this to NEO
+            # Add code to sync this to SDN controller
             urlpath = sdn_utils.strings_to_url(row.object_type)
             if row.operation != sdn_const.POST:
                 urlpath = sdn_utils.strings_to_url(urlpath, row.object_uuid)
@@ -173,7 +173,7 @@ class SdnJournalThread(object):
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Log an error and raise the retry count. If the retry count
                 # exceeds the limit, move it to the failed state.
-                LOG.error("Cannot connect to the NEO Controller")
+                LOG.error("Cannot connect to the SDN Controller")
                 db.update_pending_db_row_retry(session, row,
                                                self._row_retry_count)
                 # Break out of the loop and retry with the next
@@ -182,7 +182,7 @@ class SdnJournalThread(object):
 
     def _sync_progress_rows(self, session):
         # 1. get all progressed job
-        # 2. get status for NEO
+        # 2. get status for SDN Controller
         # 3. Update status if completed/failed
         LOG.debug("sync_progress_rows operation walking database")
         rows = db.get_all_monitoring_db_row_by_oldest(session)
@@ -204,13 +204,13 @@ class SdnJournalThread(object):
                                 session, row, sdn_const.COMPLETED)
                             continue
                         if job_status in ("Pending", "Running"):
-                            LOG.debug("NEO Job id %(job_id)s is %(status)s "
-                                      "continue monitoring",
+                            LOG.debug("SDN Controller Job id %(job_id)s is "
+                                      "%(status)s continue monitoring",
                                       {'job_id': row.job_id,
                                        'status': job_status})
                             continue
-                        LOG.error("NEO Job id %(job_id)s, failed with"
-                                  " %(status)s",
+                        LOG.error("SDN Controller Job id %(job_id)s, "
+                                  "failed with %(status)s",
                                   {'job_id': row.job_id,
                                   'status': job_status})
                         db.update_db_row_state(
@@ -219,14 +219,14 @@ class SdnJournalThread(object):
                         LOG.error("failed to extract response for job"
                                   "id %s", row.job_id)
                 else:
-                    LOG.error("NEO Job id %(job_id)s, failed with "
+                    LOG.error("SDN Controller Job id %(job_id)s, failed with "
                               "%(status)s",
                               {'job_id': row.job_id, 'status': job_status})
                     db.update_db_row_state(session, row, sdn_const.PENDING)
 
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Don't raise the retry count, just log an error
-                LOG.error("Cannot connect to the NEO Controller")
+                LOG.error("Cannot connect to the SDN Controller")
                 db.update_db_row_state(session, row, sdn_const.PENDING)
                 # Break out of the loop and retry with the next
                 # timer interval
