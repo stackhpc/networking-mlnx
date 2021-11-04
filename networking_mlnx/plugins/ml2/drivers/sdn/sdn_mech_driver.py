@@ -256,7 +256,7 @@ class SDNMechanismDriver(api.MechanismDriver):
 
         vnic_type = port_dic[portbindings.VNIC_TYPE]
         # Check if we get a client id after binding the bare metal port,
-        # and report the port to neo
+        # and report the port to sdn controller
         if vnic_type == portbindings.VNIC_BAREMETAL:
             # Ethernet Case
             link__info = self._get_local_link_information(port_dic)
