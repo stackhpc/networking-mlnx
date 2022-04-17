@@ -18,7 +18,7 @@ from networking_mlnx._i18n import _
 
 mlnx_opts = [
     cfg.BoolOpt('client_id_hardware',
-                default="False",
+                default="True",
                 help=_("Generate client-id according to send "
                        "dhcp-client-identifier = hardware")),
 ]
