@@ -41,9 +41,8 @@ def call_thread_on_end(func):
     return new_func
 
 
-def record(db_session, object_type, object_uuid, operation, data,
-           context=None):
-    db.create_pending_row(db_session, object_type, object_uuid, operation,
+def record(context, object_type, object_uuid, operation, data):
+    db.create_pending_row(context, object_type, object_uuid, operation,
                           data)
 
 
@@ -87,8 +86,8 @@ class SdnJournalThread(object):
                 self.event.clear()
 
                 context = nl_context.get_admin_context()
-                self._sync_pending_rows(context.session, exit_after_run)
-                self._sync_progress_rows(context.session)
+                self._sync_pending_rows(context, exit_after_run)
+                self._sync_progress_rows(context)
 
                 LOG.debug("Clearing sync thread event")
                 if exit_after_run:
@@ -99,16 +98,16 @@ class SdnJournalThread(object):
                 # Catch exceptions to protect the thread while running
                 LOG.exception("Error on run_sync_thread")
 
-    def _sync_pending_rows(self, session, exit_after_run):
+    def _sync_pending_rows(self, context, exit_after_run):
         while True:
             LOG.debug("sync_pending_rows operation walking database")
-            row = db.get_oldest_pending_db_row_with_lock(session)
+            row = db.get_oldest_pending_db_row_with_lock(context)
             if not row:
                 LOG.debug("No rows to sync")
                 break
 
             # Validate the operation
-            valid = dependency_validations.validate(session, row)
+            valid = dependency_validations.validate(context, row)
             if not valid:
                 LOG.info("%(operation)s %(type)s %(uuid)s is not a "
                          "valid operation yet, skipping for now",
@@ -116,7 +115,7 @@ class SdnJournalThread(object):
                           'type': row.object_type,
                           'uuid': row.object_uuid})
                 # Set row back to pending.
-                db.update_db_row_state(session, row, sdn_const.PENDING)
+                db.update_db_row_state(context, row, sdn_const.PENDING)
 
                 if exit_after_run:
                     break
@@ -137,10 +136,10 @@ class SdnJournalThread(object):
                     client_operation_method(
                         urlpath, jsonutils.loads(row.data)))
                 if response.status_code == requests.codes.not_implemented:
-                    db.update_db_row_state(session, row, sdn_const.COMPLETED)
+                    db.update_db_row_state(context, row, sdn_const.COMPLETED)
                 elif (response.status_code == requests.codes.not_found and
                       row.operation == sdn_const.DELETE):
-                    db.update_db_row_state(session, row, sdn_const.COMPLETED)
+                    db.update_db_row_state(context, row, sdn_const.COMPLETED)
                 else:
                     # update in progress and job_id
                     job_id = None
@@ -164,9 +163,9 @@ class SdnJournalThread(object):
 
                     if job_id:
                         db.update_db_row_job_id(
-                            session, row, job_id=job_id)
+                            context, row, job_id=job_id)
                         db.update_db_row_state(
-                            session, row, sdn_const.MONITORING)
+                            context, row, sdn_const.MONITORING)
                     else:
                         LOG.warning("object %s has NULL job_id",
                                     row.object_uuid)
@@ -174,18 +173,18 @@ class SdnJournalThread(object):
                 # Log an error and raise the retry count. If the retry count
                 # exceeds the limit, move it to the failed state.
                 LOG.error("Cannot connect to the SDN Controller")
-                db.update_pending_db_row_retry(session, row,
+                db.update_pending_db_row_retry(context, row,
                                                self._row_retry_count)
                 # Break out of the loop and retry with the next
                 # timer interval
                 break
 
-    def _sync_progress_rows(self, session):
+    def _sync_progress_rows(self, context):
         # 1. get all progressed job
         # 2. get status for SDN Controller
         # 3. Update status if completed/failed
         LOG.debug("sync_progress_rows operation walking database")
-        rows = db.get_all_monitoring_db_row_by_oldest(session)
+        rows = db.get_all_monitoring_db_row_by_oldest(context)
         if not rows:
             LOG.debug("No rows to sync")
             return
@@ -201,7 +200,7 @@ class SdnJournalThread(object):
                         job_status = response.json().get('Status')
                         if job_status == 'Completed':
                             db.update_db_row_state(
-                                session, row, sdn_const.COMPLETED)
+                                context, row, sdn_const.COMPLETED)
                             continue
                         if job_status in ("Pending", "Running"):
                             LOG.debug("SDN Controller Job id %(job_id)s is "
@@ -214,7 +213,7 @@ class SdnJournalThread(object):
                                   {'job_id': row.job_id,
                                   'status': job_status})
                         db.update_db_row_state(
-                            session, row, sdn_const.PENDING)
+                            context, row, sdn_const.PENDING)
                     except (ValueError, AttributeError):
                         LOG.error("failed to extract response for job"
                                   "id %s", row.job_id)
@@ -222,12 +221,12 @@ class SdnJournalThread(object):
                     LOG.error("SDN Controller Job id %(job_id)s, failed with "
                               "%(status)s",
                               {'job_id': row.job_id, 'status': job_status})
-                    db.update_db_row_state(session, row, sdn_const.PENDING)
+                    db.update_db_row_state(context, row, sdn_const.PENDING)
 
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Don't raise the retry count, just log an error
                 LOG.error("Cannot connect to the SDN Controller")
-                db.update_db_row_state(session, row, sdn_const.PENDING)
+                db.update_db_row_state(context, row, sdn_const.PENDING)
                 # Break out of the loop and retry with the next
                 # timer interval
                 break

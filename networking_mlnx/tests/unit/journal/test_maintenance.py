@@ -18,7 +18,8 @@ import threading
 
 import mock
 from neutron.tests.unit import testlib_api
-from neutron_lib.db import api as neutron_db_api
+from neutron_lib import context
+from neutron_lib.db import api as db_api
 
 from networking_mlnx.db.models import sdn_maintenance_db
 from networking_mlnx.journal import maintenance
@@ -28,20 +29,21 @@ from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
     def setUp(self):
         super(MaintenanceThreadTestCase, self).setUp()
-        self.db_session = neutron_db_api.get_writer_session()
-
-        row = sdn_maintenance_db.SdnMaintenance(state=sdn_const.PENDING)
-        self.db_session.add(row)
-        self.db_session.flush()
-
+        self.db_context = context.get_admin_context()
+        self.add_sdn_maintenance_row_with_pending_state()
         self.thread = maintenance.MaintenanceThread()
         self.thread.maintenance_interval = 0.01
+
+    def add_sdn_maintenance_row_with_pending_state(self):
+        with db_api.CONTEXT_WRITER.using(self.db_context):
+            row = sdn_maintenance_db.SdnMaintenance(state=sdn_const.PENDING)
+            self.db_context.session.add(row)
 
     def test__execute_op_no_exception(self):
         with mock.patch.object(maintenance, 'LOG') as mock_log:
             operation = mock.MagicMock()
             operation.__name__ = "test"
-            self.thread._execute_op(operation, self.db_session)
+            self.thread._execute_op(operation, self.db_context)
             self.assertTrue(operation.called)
             self.assertTrue(mock_log.info.called)
             self.assertFalse(mock_log.exception.called)
@@ -50,7 +52,7 @@ class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
         with mock.patch.object(maintenance, 'LOG') as mock_log:
             operation = mock.MagicMock(side_effect=Exception())
             operation.__name__ = "test"
-            self.thread._execute_op(operation, self.db_session)
+            self.thread._execute_op(operation, self.db_context)
             self.assertTrue(mock_log.exception.called)
 
     def test_thread_works(self):

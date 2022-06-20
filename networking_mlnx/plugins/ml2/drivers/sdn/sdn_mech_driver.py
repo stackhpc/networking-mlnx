@@ -19,7 +19,7 @@ from neutron.objects.qos import policy as policy_object
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as neutron_const
-from neutron_lib.db import api as db_api
+from neutron_lib import context as nl_context
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 from oslo_log import log
@@ -162,7 +162,7 @@ class SDNMechanismDriver(api.MechanismDriver):
             SDNMechanismDriver._replace_port_dhcp_opt_name(
                 data, edo_ext.DHCP_OPT_CLIENT_ID_NUM,
                 edo_ext.DHCP_OPT_CLIENT_ID)
-        journal.record(context._plugin_context.session, object_type,
+        journal.record(context._plugin_context, object_type,
                        context.current['id'], operation, data)
 
     @context_validator(sdn_const.NETWORK)
@@ -335,8 +335,8 @@ class SDNMechanismDriver(api.MechanismDriver):
                        if operation == sdn_const.POST else res_id)
         if resource_dict is not None:
             resource_dict = resource_dict[object_type]
-        journal.record(db_api.get_session(), object_type, object_uuid,
-                       operation, resource_dict)
+        journal.record(nl_context.get_admin_context(), object_type,
+                       object_uuid, operation, resource_dict)
 
     def _postcommit(self, context):
         if not self._is_sdn_sync_enabled():

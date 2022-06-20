@@ -19,6 +19,7 @@ from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron.tests.unit import testlib_api
 from neutron_lib import constants
 from neutron_lib import context as nl_context
+from neutron_lib.db import api as db_api
 from oslo_config import cfg
 from oslo_config import fixture as fixture_config
 from oslo_serialization import jsonutils
@@ -191,8 +192,8 @@ class SdnDriverTestCase(SdnConfigBase):
 
     def setUp(self):
         super(SdnDriverTestCase, self).setUp()
-        context = nl_context.get_admin_context()
-        self.db_session = context.session
+        self.context = nl_context.get_admin_context()
+#        self.db_session = context.session
         self.mech = sdn_mech_driver.SDNMechanismDriver()
         self.mock_sync_thread = mock.patch.object(
             journal.SdnJournalThread, 'start_sync_thread').start()
@@ -215,8 +216,7 @@ class SdnDriverTestCase(SdnConfigBase):
         context = mock.Mock(current=current, _network=current,
                             _segments=self._get_segments_list(),
                             network_segments=self._get_segments_list())
-        context._plugin_context.session = (
-            nl_context.get_admin_context().session)
+        context._plugin_context = nl_context.get_admin_context()
         return context
 
     def _get_mock_port_operation_context(self):
@@ -251,8 +251,7 @@ class SdnDriverTestCase(SdnConfigBase):
         context = mock.Mock(current=current, _port=current,
                             original=original,
                             network=network_context)
-        context._plugin_context.session = (
-            nl_context.get_admin_context().session)
+        context._plugin_context = nl_context.get_admin_context()
         return context
 
     def _get_mock_bind_operation_context(self):
@@ -274,8 +273,7 @@ class SdnDriverTestCase(SdnConfigBase):
         context = mock.Mock(current=current, _port=current,
                             segments_to_bind=self._get_segments_list(),
                             network=network_context)
-        context._plugin_context.session = (
-            nl_context.get_admin_context().session)
+        context._plugin_context = nl_context.get_admin_context()
         return context
 
     def _get_mock_operation_context(self, object_type):
@@ -310,9 +308,9 @@ class SdnDriverTestCase(SdnConfigBase):
             yield err_code
 
     def _db_cleanup(self):
-        rows = db.get_all_db_rows(self.db_session)
+        rows = db.get_all_db_rows(self.context)
         for row in rows:
-            db.delete_row(self.db_session, row=row)
+            db.delete_row(self.context, row=row)
 
     @classmethod
     def _get_mock_request_response(cls, status_code, job_url):
@@ -335,6 +333,7 @@ class SdnDriverTestCase(SdnConfigBase):
 
         request_response = self._get_mock_request_response(
             status_code, job_url)
+
         if expected_calls == 2 and status_code < 400:
             job_url2 = 'app/jobs/' + uuidutils.generate_uuid()
             request_response.json = mock.Mock(
@@ -398,7 +397,7 @@ class SdnDriverTestCase(SdnConfigBase):
         self._call_operation_object(operation, object_type)
 
         context = self._get_mock_operation_context(object_type)
-        row = db.get_oldest_pending_db_row_with_lock(self.db_session)
+        row = db.get_oldest_pending_db_row_with_lock(context._plugin_context)
         self.assertEqual(operation, row['operation'])
         self.assertEqual(object_type, row['object_type'])
         self.assertEqual(context.current['id'], row['object_uuid'])
@@ -435,19 +434,19 @@ class SdnDriverTestCase(SdnConfigBase):
     def _test_object_type(self, object_type):
         # Add and process create request.
         self._test_thread_processing(sdn_const.POST, object_type)
-        rows = db.get_all_db_rows_by_state(self.db_session,
+        rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(1, len(rows))
 
         # Add and process update request. Adds to database.
         self._test_thread_processing(sdn_const.PUT, object_type)
-        rows = db.get_all_db_rows_by_state(self.db_session,
+        rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(2, len(rows))
 
         # Add and process update request. Adds to database.
         self._test_thread_processing(sdn_const.DELETE, object_type)
-        rows = db.get_all_db_rows_by_state(self.db_session,
+        rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(3, len(rows))
 
@@ -462,7 +461,7 @@ class SdnDriverTestCase(SdnConfigBase):
                                      expected_calls=2)
 
         # Verify both rows are now marked as completed.
-        rows = db.get_all_db_rows_by_state(self.db_session,
+        rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(2, len(rows))
 
@@ -484,8 +483,8 @@ class SdnDriverTestCase(SdnConfigBase):
 
         # Get pending row and mark as processing so that
         # this row will not be processed by journal thread.
-        row = db.get_all_db_rows_by_state(self.db_session, sdn_const.PENDING)
-        db.update_db_row_state(self.db_session, row[0], sdn_const.PROCESSING)
+        row = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
+        db.update_db_row_state(self.context, row[0], sdn_const.PROCESSING)
 
         # Create the object_type database row and process.
         # Verify that object request is not processed because the
@@ -495,10 +494,10 @@ class SdnDriverTestCase(SdnConfigBase):
                                      expected_calls=0)
 
         # Verify that all rows are still in the database.
-        rows = db.get_all_db_rows_by_state(self.db_session,
+        rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.PROCESSING)
         self.assertEqual(1, len(rows))
-        rows = db.get_all_db_rows_by_state(self.db_session, sdn_const.PENDING)
+        rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
         self.assertEqual(1, len(rows))
 
     def _test_parent_delete_pending_child_delete(self, parent, child):
@@ -512,17 +511,17 @@ class SdnDriverTestCase(SdnConfigBase):
 
         # Get pending row and mark as processing and update
         # the last_retried time
-        row = db.get_all_db_rows_by_state(self.db_session,
+        row = db.get_all_db_rows_by_state(self.context,
                                           sdn_const.PENDING)[0]
         row.last_retried = last_retried
-        db.update_db_row_state(self.db_session, row, sdn_const.PROCESSING)
+        db.update_db_row_state(self.context, row, sdn_const.PROCESSING)
 
         # Test if the cleanup marks this in the desired state
         # based on the last_retried timestamp
-        cleanup.JournalCleanup().cleanup_processing_rows(self.db_session)
+        cleanup.JournalCleanup().cleanup_processing_rows(self.context)
 
         # Verify that the Db row is in the desired state
-        rows = db.get_all_db_rows_by_state(self.db_session, expected_state)
+        rows = db.get_all_db_rows_by_state(self.context, expected_state)
         self.assertEqual(1, len(rows))
 
     def test_driver(self):
@@ -590,10 +589,10 @@ class SdnDriverTestCase(SdnConfigBase):
         # Verify that the thread call was made.
         self.assertTrue(self.mock_sync_thread.called)
 
-    def _decrease_row_created_time(self, row):
+    @db_api.CONTEXT_WRITER
+    def _decrease_row_created_time(self, context, row):
         row.created_at -= datetime.timedelta(hours=1)
-        self.db_session.merge(row)
-        self.db_session.flush()
+        self.context.session.merge(row)
 
     def test_sync_multiple_updates(self):
         # add 2 updates
@@ -602,10 +601,10 @@ class SdnDriverTestCase(SdnConfigBase):
                                         sdn_const.NETWORK)
 
         # get the last update row
-        last_row = db.get_all_db_rows(self.db_session)[-1]
+        last_row = db.get_all_db_rows(self.context)[-1]
 
         # change the last update created time
-        self._decrease_row_created_time(last_row)
+        self._decrease_row_created_time(self.context, last_row)
 
         # create 1 more operation to trigger the sync thread
         # verify that there are no calls to UFM controller, because the
@@ -615,7 +614,7 @@ class SdnDriverTestCase(SdnConfigBase):
 
         # validate that all the rows are in 'pending' state
         # first row should be set back to 'pending' because it was not valid
-        rows = db.get_all_db_rows_by_state(self.db_session, sdn_const.PENDING)
+        rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
         self.assertEqual(3, len(rows))
 
     def test_network_filter_phynset(self):
@@ -636,5 +635,5 @@ class SdnDriverTestCase(SdnConfigBase):
         # Add and process create request.
         for operation in (sdn_const.POST, sdn_const.PUT, sdn_const.DELETE):
             self._call_operation_object(operation, object_type)
-            rows = db.get_all_db_rows(self.db_session)
+            rows = db.get_all_db_rows(self.context)
             self.assertEqual(0, len(rows))

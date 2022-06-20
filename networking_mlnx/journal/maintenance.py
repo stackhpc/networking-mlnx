@@ -13,7 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
+from neutron_lib import context
 from neutron_lib.db import api as neutron_db_api
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -34,15 +34,16 @@ class MaintenanceThread(object):
     def start(self):
         self.timer.start(self.maintenance_interval, stop_on_exception=False)
 
-    def _execute_op(self, operation, session):
+    @neutron_db_api.CONTEXT_READER
+    def _execute_op(self, operation, context):
         op_details = operation.__name__
         if operation.__doc__:
             op_details += " (%s)" % operation.func_doc
 
         try:
             LOG.info("Starting maintenance operation %s.", op_details)
-            db.update_maintenance_operation(session, operation=operation)
-            operation(session=session)
+            db.update_maintenance_operation(context, operation=operation)
+            operation(session=context.session)
             LOG.info("Finished maintenance operation %s.", op_details)
         except Exception:
             LOG.exception("Failed during maintenance operation %s.",
@@ -50,17 +51,17 @@ class MaintenanceThread(object):
 
     def execute_ops(self):
         LOG.info("Starting journal maintenance run.")
-        session = neutron_db_api.get_reader_session()
-        if not db.lock_maintenance(session):
+        db_context = context.get_admin_context()
+        if not db.lock_maintenance(db_context):
             LOG.info("Maintenance already running, aborting.")
             return
 
         try:
             for operation in self.maintenance_ops:
-                self._execute_op(operation, session)
+                self._execute_op(operation, db_context)
         finally:
-            db.update_maintenance_operation(session, operation=None)
-            db.unlock_maintenance(session)
+            db.update_maintenance_operation(db_context, operation=None)
+            db.unlock_maintenance(db_context)
             LOG.info("Finished journal maintenance run.")
 
     def register_operation(self, f):

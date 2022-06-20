@@ -19,14 +19,14 @@ from networking_mlnx.db import db
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 
 
-def _is_valid_operation(session, row):
+def _is_valid_operation(context, row):
     # Check if there are older updates in the queue
-    if db.check_for_older_ops(session, row):
+    if db.check_for_older_ops(context, row):
         return False
     return True
 
 
-def validate_network_operation(session, row):
+def validate_network_operation(context, row):
     """Validate the network operation based on dependencies.
 
     Validate network operation depending on whether it's dependencies
@@ -36,19 +36,19 @@ def validate_network_operation(session, row):
         # Check for any pending or processing create or update
         # ops on this uuid itself
         if db.check_for_pending_or_processing_ops(
-            session, row.object_uuid, [sdn_const.PUT,
+            context, row.object_uuid, [sdn_const.PUT,
                                        sdn_const.POST]):
             return False
         if db.check_for_pending_delete_ops_with_parent(
-            session, sdn_const.PORT, row.object_uuid):
+            context, sdn_const.PORT, row.object_uuid):
             return False
     elif (row.operation == sdn_const.PUT and
-            not _is_valid_operation(session, row)):
+            not _is_valid_operation(context, row)):
         return False
     return True
 
 
-def validate_port_operation(session, row):
+def validate_port_operation(context, row):
     """Validate port operation based on dependencies.
 
     Validate port operation depending on whether it's dependencies
@@ -59,10 +59,10 @@ def validate_port_operation(session, row):
         network_id = network_dict['network_id']
         # Check for pending or processing network operations
         ops = db.check_for_pending_or_processing_ops(
-            session, network_id, [sdn_const.POST])
+            context, network_id, [sdn_const.POST])
         if ops:
             return False
-    return _is_valid_operation(session, row)
+    return _is_valid_operation(context, row)
 
 
 _VALIDATION_MAP = {
@@ -71,13 +71,13 @@ _VALIDATION_MAP = {
 }
 
 
-def validate(session, row):
+def validate(context, row):
     """Validate resource dependency in journaled operations.
 
-    :param session: db session
+    :param context: context manager
     :param row: entry in journal entry to be validated
     """
-    return _VALIDATION_MAP[row.object_type](session, row)
+    return _VALIDATION_MAP[row.object_type](context, row)
 
 
 def register_validator(object_type, validator):

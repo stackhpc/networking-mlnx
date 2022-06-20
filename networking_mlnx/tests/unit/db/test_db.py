@@ -14,10 +14,12 @@
 
 from datetime import datetime
 from datetime import timedelta
+import time
 
 import mock
 from neutron.tests.unit import testlib_api
 from neutron_lib import context
+from neutron_lib.db import api as db_api
 from oslo_db import exception
 
 from networking_mlnx.db import db
@@ -34,22 +36,21 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
     def setUp(self):
         super(DbTestCase, self).setUp()
         self.db_context = context.get_admin_context()
-        self.db_session = self.db_context.session
         self.addCleanup(self._db_cleanup)
 
     def _db_cleanup(self):
-        self.db_session.query(sdn_journal_db.SdnJournal).delete()
+        self.db_context.session.query(sdn_journal_db.SdnJournal).delete()
 
     def _update_row(self, row):
-        self.db_session.merge(row)
-        self.db_session.flush()
+        with db_api.CONTEXT_WRITER.using(self.db_context):
+            self.db_context.session.merge(row)
 
     def _test_validate_updates(self, rows, time_deltas, expected_validations):
         for row in rows:
-            db.create_pending_row(self.db_session, *row)
+            db.create_pending_row(self.db_context, *row)
 
         # update row created_at
-        rows = db.get_all_db_rows(self.db_session)
+        rows = db.get_all_db_rows(self.db_context)
         now = datetime.now()
         for row, time_delta in zip(rows, time_deltas):
             row.created_at = now - timedelta(hours=time_delta)
@@ -57,35 +58,35 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
 
         # validate if there are older rows
         for row, expected_valid in zip(rows, expected_validations):
-            valid = not db.check_for_older_ops(self.db_session, row)
+            valid = not db.check_for_older_ops(self.db_context, row)
             self.assertEqual(expected_valid, valid)
 
     def _test_retry_count(self, retry_num, max_retry,
                           expected_retry_count, expected_state):
         # add new pending row
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
 
         # update the row with the requested retry_num
-        row = db.get_all_db_rows(self.db_session)[0]
+        row = db.get_all_db_rows(self.db_context)[0]
         row.retry_count = retry_num - 1
-        db.update_pending_db_row_retry(self.db_session, row, max_retry)
+        db.update_pending_db_row_retry(self.db_context, row, max_retry)
 
         # validate the state and the retry_count of the row
-        row = db.get_all_db_rows(self.db_session)[0]
+        row = db.get_all_db_rows(self.db_context)[0]
         self.assertEqual(expected_state, row.state)
         self.assertEqual(expected_retry_count, row.retry_count)
 
     def _test_update_row_state(self, from_state, to_state):
         # add new pending row
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
 
-        row = db.get_all_db_rows(self.db_session)[0]
+        row = db.get_all_db_rows(self.db_context)[0]
         for state in [from_state, to_state]:
             # update the row state
-            db.update_db_row_state(self.db_session, row, state)
+            db.update_db_row_state(self.db_context, row, state)
 
             # validate the new state
-            row = db.get_all_db_rows(self.db_session)[0]
+            row = db.get_all_db_rows(self.db_context)[0]
             self.assertEqual(state, row.state)
 
     def test_validate_updates_same_object_uuid(self):
@@ -110,16 +111,16 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
             [self.UPDATE_ROW, other_row], [1, 0], [True, True])
 
     def test_get_oldest_pending_row_none_when_no_rows(self):
-        row = db.get_oldest_pending_db_row_with_lock(self.db_session)
+        row = db.get_oldest_pending_db_row_with_lock(self.db_context)
         self.assertIsNone(row)
 
     def _test_get_oldest_pending_row_none(self, state):
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
-        row = db.get_all_db_rows(self.db_session)[0]
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row = db.get_all_db_rows(self.db_context)[0]
         row.state = state
         self._update_row(row)
 
-        row = db.get_oldest_pending_db_row_with_lock(self.db_session)
+        row = db.get_oldest_pending_db_row_with_lock(self.db_context)
         self.assertIsNone(row)
 
     def test_get_oldest_pending_row_none_when_row_processing(self):
@@ -135,65 +136,68 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         self._test_get_oldest_pending_row_none(sdn_const.MONITORING)
 
     def test_get_oldest_pending_row(self):
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
-        row = db.get_oldest_pending_db_row_with_lock(self.db_session)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row = db.get_oldest_pending_db_row_with_lock(self.db_context)
         self.assertIsNotNone(row)
         self.assertEqual(sdn_const.PROCESSING, row.state)
 
     def test_get_oldest_pending_row_order(self):
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
-        older_row = db.get_all_db_rows(self.db_session)[0]
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        older_row = db.get_all_db_rows(self.db_context)[0]
         older_row.last_retried -= timedelta(minutes=1)
         self._update_row(older_row)
-
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
-        row = db.get_oldest_pending_db_row_with_lock(self.db_session)
-        self.assertEqual(older_row, row)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row = db.get_oldest_pending_db_row_with_lock(self.db_context)
+        self.assertEqual(older_row.id, row.id)
+        self.assertEqual(row.state, sdn_const.PROCESSING)
 
     def test_get_all_monitoring_db_row_by_oldest_order(self):
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
-        older_row = db.get_all_db_rows(self.db_session)[1]
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        older_row = db.get_all_db_rows(self.db_context)[1]
         older_row.last_retried -= timedelta(minutes=1)
         older_row.state = sdn_const.MONITORING
         self._update_row(older_row)
-        newer_row = db.get_all_db_rows(self.db_session)[0]
+        newer_row = db.get_all_db_rows(self.db_context)[0]
         newer_row.state = sdn_const.MONITORING
+        time.sleep(1)
         self._update_row(newer_row)
 
-        rows = db.get_all_monitoring_db_row_by_oldest(self.db_session)
-        self.assertEqual(older_row, rows[0])
-        self.assertEqual(newer_row, rows[1])
+        rows = db.get_all_monitoring_db_row_by_oldest(self.db_context)
+        self.assertEqual(older_row.last_retried, rows[0].last_retried)
+        self.assertNotEqual(newer_row.last_retried, rows[1].last_retried)
+        self.assertEqual(older_row.state, sdn_const.MONITORING)
+        self.assertEqual(newer_row.state, sdn_const.MONITORING)
 
     def test_get_oldest_pending_row_when_deadlock(self):
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
         update_mock = (
             mock.MagicMock(side_effect=(exception.DBDeadlock, mock.DEFAULT)))
 
         # Mocking is mandatory to achieve a deadlock regardless of the DB
         # backend being used when running the tests
-        with mock.patch.object(db, 'update_db_row_state', new=update_mock):
-            row = db.get_oldest_pending_db_row_with_lock(self.db_session)
+        with mock.patch.object(db, '_update_db_row_state', new=update_mock):
+            row = db.get_oldest_pending_db_row_with_lock(self.db_context)
             self.assertIsNotNone(row)
 
         self.assertEqual(2, update_mock.call_count)
 
     def _test_delete_rows_by_state_and_time(self, last_retried, row_retention,
                                             state, expected_rows):
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
 
         # update state and last retried
-        row = db.get_all_db_rows(self.db_session)[0]
+        row = db.get_all_db_rows(self.db_context)[0]
         row.state = state
         row.last_retried = row.last_retried - timedelta(seconds=last_retried)
         self._update_row(row)
 
-        db.delete_rows_by_state_and_time(self.db_session,
+        db.delete_rows_by_state_and_time(self.db_context,
                                          sdn_const.COMPLETED,
                                          timedelta(seconds=row_retention))
 
         # validate the number of rows in the journal
-        rows = db.get_all_db_rows(self.db_session)
+        rows = db.get_all_db_rows(self.db_context)
         self.assertEqual(expected_rows, len(rows))
 
     def test_delete_completed_rows_no_new_rows(self):
@@ -229,21 +233,25 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
     def test_update_row_job_id(self):
         # add new pending row
         expected_job_id = 'job_id'
-        db.create_pending_row(self.db_session, *self.UPDATE_ROW)
-        row = db.get_all_db_rows(self.db_session)[0]
-        db.update_db_row_job_id(self.db_session, row, expected_job_id)
-        row = db.get_all_db_rows(self.db_session)[0]
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row = db.get_all_db_rows(self.db_context)[0]
+        db.update_db_row_job_id(self.db_context, row, expected_job_id)
+        row = db.get_all_db_rows(self.db_context)[0]
         self.assertEqual(expected_job_id, row.job_id)
+
+    def _add_row(self, row):
+        with db_api.CONTEXT_WRITER.using(self.db_context):
+            self.db_context.session.add(row)
 
     def _test_maintenance_lock_unlock(self, db_func, existing_state,
                                       expected_state, expected_result):
         row = sdn_maintenance_db.SdnMaintenance(id='test',
                                              state=existing_state)
-        self.db_session.add(row)
-        self.db_session.flush()
+        self._add_row(row)
 
-        self.assertEqual(expected_result, db_func(self.db_session))
-        row = self.db_session.query(sdn_maintenance_db.SdnMaintenance).one()
+        self.assertEqual(expected_result, db_func(self.db_context))
+        row = self.db_context.session.query(
+            sdn_maintenance_db.SdnMaintenance).one()
         self.assertEqual(expected_state, row['state'])
 
     def test_lock_maintenance(self):
