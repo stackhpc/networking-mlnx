@@ -16,7 +16,6 @@
 
 import sys
 
-from neutron.common import config as common_config
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
@@ -105,7 +104,6 @@ class MlxEswitchDaemon(object):
 
 
 def main():
-    common_config.register_common_config_options()
     config.init(sys.argv[1:])
     try:
         daemon = MlxEswitchDaemon()
