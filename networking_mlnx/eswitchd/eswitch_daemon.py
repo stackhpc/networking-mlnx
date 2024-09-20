@@ -80,15 +80,20 @@ class MlxEswitchDaemon(object):
         if msg:
             data = jsonutils.loads(msg)
 
-        msg = None
+        result = {
+            "status": "FAIL",
+            "action": data.get("action", "UNKNOWN"),
+            "reason": "UNKNOWN"
+        }
         if data:
             try:
                 result = self.dispatcher.handle_msg(data)
-                msg = jsonutils.dumps(result)
             except Exception as e:
                 LOG.exception("Exception during message handling - %s", e)
-                msg = jsonutils.dumps(str(e))
-            sender.send_string(msg)
+                result["reason"] = str(e)
+
+        msg = jsonutils.dumps(result)
+        sender.send_string(msg)
 
     def daemon_loop(self):
         LOG.info("Daemon Started!")
