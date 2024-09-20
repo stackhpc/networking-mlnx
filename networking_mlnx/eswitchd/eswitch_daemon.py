@@ -70,8 +70,6 @@ class MlxEswitchDaemon(object):
         self.conn_os_url = set_conn_url(os_transport, os_addr, os_port)
 
         self.socket_os.bind(self.conn_os_url)
-        self.poller = zmq.Poller()
-        self.poller.register(self.socket_os, zmq.POLLIN)
 
     def _handle_msg(self):
         data = None
