@@ -33,16 +33,16 @@ class IpCommand(netdev_ops_abs.NetDevOperations):
         :param state: desired admin state as defined in
                       networking_mlnx.internal.netdev_ops.constants
         """
-        try:
-            ip = pyroute2.IPRoute()
-            link_idx = ip.link_lookup(ifname=pf_ifname)[0]
-            ip.link(
-                'set', index=link_idx, vf={'vf': int(vf_idx),
-                                           'link_state': state})
-        except IndexError:
-            raise exceptions.NetworkInterfaceNotFound(pf_ifname)
-        except pyroute2.NetlinkError as e:
-            raise exceptions.NetlinkRuntimeError(e)
+        with pyroute2.IPRoute() as ip:
+            try:
+                link_idx = ip.link_lookup(ifname=pf_ifname)[0]
+                ip.link(
+                    'set', index=link_idx, vf={'vf': int(vf_idx),
+                                            'link_state': state})
+            except IndexError:
+                raise exceptions.NetworkInterfaceNotFound(pf_ifname)
+            except pyroute2.NetlinkError as e:
+                raise exceptions.NetlinkRuntimeError(e)
 
     def set_link_state(self, ifname, state):
         """Set net device link state
@@ -51,14 +51,14 @@ class IpCommand(netdev_ops_abs.NetDevOperations):
         :param state: desired link state as defined in
                       networking_mlnx.internal.netdev_ops.constants
         """
-        try:
-            ip = pyroute2.IPRoute()
-            link_idx = ip.link_lookup(ifname=ifname)[0]
-            ip.link('set', index=link_idx, state=state)
-        except IndexError:
-            raise exceptions.NetworkInterfaceNotFound(ifname)
-        except pyroute2.NetlinkError as e:
-            raise exceptions.NetlinkRuntimeError(e)
+        with pyroute2.IPRoute() as ip:
+            try:
+                link_idx = ip.link_lookup(ifname=ifname)[0]
+                ip.link('set', index=link_idx, state=state)
+            except IndexError:
+                raise exceptions.NetworkInterfaceNotFound(ifname)
+            except pyroute2.NetlinkError as e:
+                raise exceptions.NetlinkRuntimeError(e)
 
     def set_vf_guid(self, pf_ifname, vf_idx, guid):
         """Set vf administrative port and node GUID
@@ -68,17 +68,17 @@ class IpCommand(netdev_ops_abs.NetDevOperations):
         :param guid: 64bit guid str in xx:xx:xx:xx:xx:xx:xx:xx format
                      where x is a hexadecimal digit.
         """
-        try:
-            ip = pyroute2.IPRoute()
-            link_idx = ip.link_lookup(ifname=pf_ifname)[0]
-            ip.link('set', index=link_idx, vf={'vf': int(vf_idx),
-                                               'ib_port_guid': guid})
-            ip.link('set', index=link_idx,
-                    vf={'vf': int(vf_idx), 'ib_node_guid': guid})
-        except IndexError:
-            raise exceptions.NetworkInterfaceNotFound(pf_ifname)
-        except pyroute2.NetlinkError as e:
-            raise exceptions.NetlinkRuntimeError(e)
+        with pyroute2.IPRoute() as ip:
+            try:
+                link_idx = ip.link_lookup(ifname=pf_ifname)[0]
+                ip.link('set', index=link_idx, vf={'vf': int(vf_idx),
+                                                'ib_port_guid': guid})
+                ip.link('set', index=link_idx,
+                        vf={'vf': int(vf_idx), 'ib_node_guid': guid})
+            except IndexError:
+                raise exceptions.NetworkInterfaceNotFound(pf_ifname)
+            except pyroute2.NetlinkError as e:
+                raise exceptions.NetlinkRuntimeError(e)
 
     def get_vf_guid(self, pf_ifname, vf_idx):
         """Get vf administrative GUID
@@ -91,14 +91,14 @@ class IpCommand(netdev_ops_abs.NetDevOperations):
         NOTE: while there are two GUIDs assigned per VF (port and node GUID)
         we assume they are the same and return just one value.
         """
-        try:
-            ip = pyroute2.IPRoute()
-            link_idx = ip.link_lookup(ifname=pf_ifname)[0]
-            attrs = ip.link('get', index=link_idx, ext_mask=1)[0]
-        except IndexError:
-            raise exceptions.NetworkInterfaceNotFound(pf_ifname)
-        except pyroute2.NetlinkError as e:
-            raise exceptions.NetlinkRuntimeError(e)
+        with pyroute2.IPRoute() as ip:
+            try:
+                link_idx = ip.link_lookup(ifname=pf_ifname)[0]
+                attrs = ip.link('get', index=link_idx, ext_mask=1)[0]
+            except IndexError:
+                raise exceptions.NetworkInterfaceNotFound(pf_ifname)
+            except pyroute2.NetlinkError as e:
+                raise exceptions.NetlinkRuntimeError(e)
 
         vf_attr = (attrs.get_attr('IFLA_VFINFO_LIST').
                    get_attrs("IFLA_VF_INFO"))[int(vf_idx)]

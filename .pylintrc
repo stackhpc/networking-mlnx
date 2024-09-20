@@ -85,7 +85,9 @@ disable=
  consider-using-with,
  raise-missing-from,
  consider-using-generator,
- use-dict-literal
+ use-dict-literal,
+# False positive
+ unsubscriptable-object
 
 [BASIC]
 # Variable names can be 1 to 31 characters long, with lowercase and underscores
