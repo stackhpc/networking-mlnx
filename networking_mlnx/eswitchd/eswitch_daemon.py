@@ -64,6 +64,7 @@ class MlxEswitchDaemon(object):
     def _init_connections(self):
         context = zmq.Context()
         self.socket_os = context.socket(zmq.REP)
+        self.socket.setsockopt(zmq.LINGER, 0)
         os_transport = constants.SOCKET_OS_TRANSPORT
         os_port = constants.SOCKET_OS_PORT
         os_addr = constants.SOCKET_OS_ADDR
