@@ -183,7 +183,7 @@ class TestMultiInterfaceDriver(base.TestCase):
             conf, self._get_networks_cb, self.fields)
         looping_mock.assert_called_once_with(
             net_cache_mock.remove_stale_networks)
-        loop_obj.start.called_once_with()
+        loop_obj.start.assert_called()
         # Make sure consecutive calls dont re-spawn cleanup thread
         looping_mock.reset_mock()
         loop_obj.start.reset_mock()
