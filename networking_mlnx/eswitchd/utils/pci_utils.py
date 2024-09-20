@@ -71,8 +71,8 @@ class pciUtils(object):
 
     def get_dev_attr(self, attr_path):
         try:
-            fd = open(attr_path)
-            return fd.readline().strip()
+            with open(attr_path) as fd:
+                return fd.readline().strip()
         except IOError:
             return
 
