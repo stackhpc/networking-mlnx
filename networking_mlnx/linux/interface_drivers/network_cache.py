@@ -96,13 +96,14 @@ class NetworkCache(SimpleCache):
         """
         return super(NetworkCache, self).get(network_id)
 
-    def get(self, network_id):
+    def get(self, id):
         """Get network from cache
         in case of a cache miss, attempt to get network from callback.
 
         :param network_id: network id
         :return: network dict
         """
+        network_id = id
         net = self._get_no_callback(network_id)
         if net is None:
             LOG.debug("Network %s not in cache, fetching via callback.",
