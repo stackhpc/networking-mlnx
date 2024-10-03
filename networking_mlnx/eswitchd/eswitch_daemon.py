@@ -64,14 +64,13 @@ class MlxEswitchDaemon(object):
     def _init_connections(self):
         context = zmq.Context()
         self.socket_os = context.socket(zmq.REP)
+        self.socket.setsockopt(zmq.LINGER, 0)
         os_transport = constants.SOCKET_OS_TRANSPORT
         os_port = constants.SOCKET_OS_PORT
         os_addr = constants.SOCKET_OS_ADDR
         self.conn_os_url = set_conn_url(os_transport, os_addr, os_port)
 
         self.socket_os.bind(self.conn_os_url)
-        self.poller = zmq.Poller()
-        self.poller.register(self.socket_os, zmq.POLLIN)
 
     def _handle_msg(self):
         data = None
@@ -81,15 +80,20 @@ class MlxEswitchDaemon(object):
         if msg:
             data = jsonutils.loads(msg)
 
-        msg = None
+        result = {
+            "status": "FAIL",
+            "action": data.get("action", "UNKNOWN"),
+            "reason": "UNKNOWN"
+        }
         if data:
             try:
                 result = self.dispatcher.handle_msg(data)
-                msg = jsonutils.dumps(result)
             except Exception as e:
                 LOG.exception("Exception during message handling - %s", e)
-                msg = jsonutils.dumps(str(e))
-            sender.send_string(msg)
+                result["reason"] = str(e)
+
+        msg = jsonutils.dumps(result)
+        sender.send_string(msg)
 
     def daemon_loop(self):
         LOG.info("Daemon Started!")
