@@ -32,7 +32,7 @@ class JournalCleanup(object):
         self._processing_timeout = cfg.CONF.sdn.processing_timeout
 
     def delete_completed_rows(self, session):
-        if self._rows_retention is not -1:
+        if self._rows_retention != -1:
             LOG.debug("Deleting completed rows")
             db.delete_rows_by_state_and_time(
                 session, sdn_const.COMPLETED,
