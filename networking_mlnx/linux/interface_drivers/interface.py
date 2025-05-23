@@ -91,7 +91,6 @@ class MultiInterfaceDriver(n_interface.LinuxInterfaceDriver):
     #                user of this map to check `ovs_use_veth` is false.
 
     driver_to_interface_kind = {
-        n_interface.BridgeInterfaceDriver: constants.INTERFACE_KIND_VETH,
         n_interface.OVSInterfaceDriver: constants.INTERFACE_KIND_OVS,
         n_interface.NullDriver: constants.INTERFACE_KIND_NULL,
         IPoIBInterfaceDriver: constants.INTERFACE_KIND_IPOIB}
