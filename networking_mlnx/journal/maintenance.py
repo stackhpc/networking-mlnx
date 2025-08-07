@@ -14,7 +14,6 @@
 #    under the License.
 
 from neutron_lib import context
-from neutron_lib.db import api as neutron_db_api
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_service import loopingcall
@@ -34,7 +33,6 @@ class MaintenanceThread(object):
     def start(self):
         self.timer.start(self.maintenance_interval, stop_on_exception=False)
 
-    @neutron_db_api.CONTEXT_READER
     def _execute_op(self, operation, context):
         op_details = operation.__name__
         if operation.__doc__:
@@ -43,7 +41,7 @@ class MaintenanceThread(object):
         try:
             LOG.info("Starting maintenance operation %s.", op_details)
             db.update_maintenance_operation(context, operation=operation)
-            operation(session=context.session)
+            operation(session=context)
             LOG.info("Finished maintenance operation %s.", op_details)
         except Exception:
             LOG.exception("Failed during maintenance operation %s.",
