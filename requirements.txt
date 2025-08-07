@@ -22,4 +22,4 @@ pyzmq
 # Using neutron master is necessary for neutron-db-manage test,
 # Ussuri DB branch was created in master[1] and not yet released.
 # [1] https://github.com/openstack/neutron/commit/da93f09676a6531394bf898e7292c2ae87194ce3
--e git+https://git.openstack.org/openstack/neutron#egg=neutron
+-e git+https://git.openstack.org/openstack/neutron@stable/2025.1#egg=neutron
