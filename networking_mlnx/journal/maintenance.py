@@ -17,7 +17,6 @@ import threading
 import time
 
 from neutron_lib import context
-from neutron_lib.db import api as neutron_db_api
 from oslo_config import cfg
 from oslo_log import log as logging
 
@@ -41,7 +40,6 @@ class MaintenanceThread(object):
         self.maintenance_thread.daemon = True
         self.maintenance_thread.start()
 
-    @neutron_db_api.CONTEXT_READER
     def _execute_op(self, operation, context):
         op_details = operation.__name__
         if operation.__doc__:
@@ -50,7 +48,7 @@ class MaintenanceThread(object):
         try:
             LOG.info("Starting maintenance operation %s.", op_details)
             db.update_maintenance_operation(context, operation=operation)
-            operation(session=context.session)
+            operation(context=context)
             LOG.info("Finished maintenance operation %s.", op_details)
         except Exception:
             LOG.exception("Failed during maintenance operation %s.",
