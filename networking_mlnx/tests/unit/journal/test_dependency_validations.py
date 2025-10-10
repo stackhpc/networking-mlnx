@@ -15,7 +15,7 @@
 #  under the License.
 #
 
-import mock
+import unittest.mock as mock
 
 from neutron.tests import base
 

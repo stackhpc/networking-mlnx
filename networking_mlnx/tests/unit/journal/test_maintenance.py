@@ -15,8 +15,8 @@
 
 
 import threading
+import unittest.mock as mock
 
-import mock
 from neutron.tests.unit import testlib_api
 from neutron_lib import context
 from neutron_lib.db import api as db_api

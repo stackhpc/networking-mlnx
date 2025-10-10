@@ -12,7 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import mock
+import unittest.mock as mock
 
 from networking_mlnx.eswitchd.common import exceptions
 from networking_mlnx.eswitchd import eswitch_manager as esm

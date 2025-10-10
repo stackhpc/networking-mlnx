@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import mock
+import unittest.mock as mock
+
 from neutron.tests import base
 from oslo_config import cfg
 import testtools
@@ -133,14 +134,14 @@ class TestEswitchAgent(base.BaseTestCase):
         with mock.patch('networking_mlnx.plugins.ml2.drivers.mlnx.agent.'
                         'mlnx_eswitch_neutron_agent.EswitchManager.'
                         'get_vnics',
-                        return_value=[]),\
+                        return_value=[]), \
             mock.patch.object(self.agent.plugin_rpc,
                               'get_devices_details_list',
-                              return_value=[details]),\
+                              return_value=[details]), \
             mock.patch.object(self.agent.plugin_rpc,
-                              'update_device_up') as upd_dev_up,\
+                              'update_device_up') as upd_dev_up, \
             mock.patch.object(self.agent.plugin_rpc,
-                              'update_device_down') as upd_dev_down,\
+                              'update_device_down') as upd_dev_down, \
             mock.patch.object(self.agent, func_name) as func:
             self.assertFalse(self.agent.treat_devices_added_or_updated(
                 [self.VNIC_PORT_1, self.VNIC_PORT_2]))
@@ -201,7 +202,7 @@ class TestEswitchAgent(base.BaseTestCase):
     def _test_process_network_ports(self, port_info):
         with mock.patch.object(self.agent,
                                'treat_devices_added_or_updated',
-                               return_value=False) as device_added_updated,\
+                               return_value=False) as device_added_updated, \
             mock.patch.object(self.agent, 'treat_devices_removed',
                               return_value=False) as device_removed:
             self.assertFalse(self.agent.process_network_ports(port_info))

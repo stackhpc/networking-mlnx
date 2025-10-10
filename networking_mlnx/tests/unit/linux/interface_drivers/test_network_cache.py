@@ -13,8 +13,8 @@
 #    under the License.
 
 import copy
+import unittest.mock as mock
 
-import mock
 from oslo_concurrency import lockutils
 from oslo_utils.fixture import uuidsentinel as uuids
 

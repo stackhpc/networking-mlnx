@@ -12,7 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import mock
+import unittest.mock as mock
+
 from neutron.agent.linux import interface as n_interface
 from neutron.agent.linux import ip_lib as n_ip_lib
 from neutron_lib.utils import runtime

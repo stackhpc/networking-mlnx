@@ -12,7 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import mock
+import unittest.mock as mock
 
 from neutron.privileged.agent.linux import ip_lib as n_privileged
 

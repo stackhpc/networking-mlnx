@@ -16,8 +16,8 @@
 
 import contextlib
 import subprocess
+import unittest.mock as mock
 
-import mock
 import six
 
 from networking_mlnx.eswitchd.utils import pci_utils
