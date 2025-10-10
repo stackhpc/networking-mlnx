@@ -115,7 +115,7 @@ class EswitchManager(object):
                      'to eSwitch for vNIC mac_address %(mac)s',
                      {'seg_id': seg_id, 'mac': port_mac})
         elif network_type == constants.TYPE_FLAT:
-            LOG.info('Binding eSwitch for vNIC mac_address %(mac)s'
+            LOG.info('Binding eSwitch for vNIC mac_address %(mac)s '
                      'to flat network', {'mac': port_mac})
             seg_id = 0
 
