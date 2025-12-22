@@ -15,14 +15,13 @@
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
-from oslo_utils import importutils
 import six
 
 from networking_mlnx._i18n import _LE
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import comm_utils
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import exceptions
 
-zmq = importutils.try_import('eventlet.green.zmq')
+import zmq
 
 LOG = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ LOG = logging.getLogger(__name__)
 class EswitchUtils(object):
     def __init__(self, daemon_endpoint, timeout):
         if not zmq:
-            LOG.error("Failed to import eventlet.green.zmq. "
+            LOG.error("Failed to import zmq. "
                       "Won't connect to eSwitchD - exiting...")
             raise SystemExit(1)
         self.__conn = None

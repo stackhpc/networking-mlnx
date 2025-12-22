@@ -24,6 +24,8 @@ from networking_mlnx.plugins.ml2.drivers.mlnx.agent import (
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import exceptions
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import utils
 
+from oslo_service.backend._threading import loopingcall
+
 
 class TestEswichManager(base.BaseTestCase):
 
@@ -100,10 +102,12 @@ class TestEswitchAgent(base.BaseTestCase):
 
             def start(self, interval=0):
                 self.f()
-
-        mock.patch('neutron.openstack.common.loopingcall.'
+        mock.patch('oslo_service.backend._threading.loopingcall.'
                    'FixedIntervalLoopingCall',
                    new=MockFixedIntervalLoopingCall)
+        self.mock_loopstart_p = mock.patch.object(
+            loopingcall.FixedIntervalLoopingCall, 'start')
+        self.mock_loopstart = self.mock_loopstart_p.start()
 
         with mock.patch.object(utils, 'zmq'):
             self.agent = mlnx_eswitch_neutron_agent.MlnxEswitchNeutronAgent(

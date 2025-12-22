@@ -13,11 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import threading
+import time
+
 from neutron_lib import context
 from neutron_lib.db import api as neutron_db_api
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_service import loopingcall
 
 from networking_mlnx.db import db
 
@@ -27,12 +29,17 @@ LOG = logging.getLogger(__name__)
 
 class MaintenanceThread(object):
     def __init__(self):
-        self.timer = loopingcall.FixedIntervalLoopingCall(self.execute_ops)
+        self.maintenance_thread = threading.Thread(
+            target=self._maintenance_loop)
         self.maintenance_interval = cfg.CONF.sdn.maintenance_interval
         self.maintenance_ops = []
 
     def start(self):
-        self.timer.start(self.maintenance_interval, stop_on_exception=False)
+        # FIXME(wszumski): Need to implement a clean shutdown instead of using
+        # daemon threads. Currently DB operations hang indefinitely in the test
+        # framework, preventing tests from running to completition.
+        self.maintenance_thread.daemon = True
+        self.maintenance_thread.start()
 
     @neutron_db_api.CONTEXT_READER
     def _execute_op(self, operation, context):
@@ -48,6 +55,22 @@ class MaintenanceThread(object):
         except Exception:
             LOG.exception("Failed during maintenance operation %s.",
                           op_details)
+
+    def _maintenance_loop(self):
+        while True:
+            try:
+                time.sleep(self.maintenance_interval)
+                self.execute_ops()
+            except cfg.NotInitializedError:
+                # FIXME(wszumski): Added to workaround noise in the
+                # test output. I'm assuming we hit this on startup/shutdown as
+                # oslo_config is not initialized. Revisit and find a better
+                # fix ...
+                LOG.debug(
+                    "Caught NotInitializedError: Assuming shutdown/startup")
+
+            except Exception as e:
+                LOG.exception("Exception in maintenance loop - %s", e)
 
     def execute_ops(self):
         LOG.info("Starting journal maintenance run.")

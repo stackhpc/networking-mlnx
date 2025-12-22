@@ -32,7 +32,7 @@ class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
         self.db_context = context.get_admin_context()
         self.add_sdn_maintenance_row_with_pending_state()
         self.thread = maintenance.MaintenanceThread()
-        self.thread.maintenance_interval = 0.01
+        self.thread.maintenance_interval = 0.1
 
     def add_sdn_maintenance_row_with_pending_state(self):
         with db_api.CONTEXT_WRITER.using(self.db_context):

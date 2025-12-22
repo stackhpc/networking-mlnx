@@ -48,6 +48,7 @@ def record(context, object_type, object_uuid, operation, data):
 
 class SdnJournalThread(object):
     """Thread worker for the SDN Journal Database."""
+
     def __init__(self):
         self.client = client.SdnRestClient.create_client()
         self._sync_timeout = cfg.CONF.sdn.sync_timeout
@@ -70,8 +71,13 @@ class SdnJournalThread(object):
         # Prevent race when starting the timer
         with self.lock:
             LOG.debug("Resetting thread timer")
+            main_thread = threading.main_thread()
+
             self._timer.cancel()
-            self._start_sync_timer()
+            if main_thread.is_alive():
+                self._start_sync_timer()
+            else:
+                LOG.debug("Shutting down timer")
         self.event.set()
 
     def _start_sync_timer(self):
@@ -83,7 +89,11 @@ class SdnJournalThread(object):
         while True:
             try:
                 self.event.wait()
+                main_thread = threading.main_thread()
                 self.event.clear()
+                if not main_thread.is_alive():
+                    LOG.debug("Shutting down sync thread")
+                    return
 
                 context = nl_context.get_admin_context()
                 self._sync_pending_rows(context, exit_after_run)
