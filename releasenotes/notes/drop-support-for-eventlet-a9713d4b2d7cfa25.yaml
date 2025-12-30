@@ -1,0 +1,7 @@
+---
+upgrade:
+  - |
+    Following the lead from Neutron, support for the eventlet library has
+    been dropped.  Although not a user facing change, users should be on the
+    lookout for multi-threading related bugs now that networking-mlnx uses
+    native threads.
