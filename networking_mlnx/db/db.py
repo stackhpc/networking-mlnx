@@ -15,7 +15,6 @@
 import datetime
 
 from neutron_lib.db import api as db_api
-from oslo_db import api as oslo_db_api
 from oslo_serialization import jsonutils
 from sqlalchemy import asc
 from sqlalchemy import func
@@ -90,7 +89,7 @@ def _get_row_with_lock(session):
 # If two (or more) different threads call this method at the same time, they
 # might both succeed in changing the same row to pending, but at least one
 # of them will get a deadlock from Galera and will have to retry the operation.
-@db_api.retry_db_errors
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def get_oldest_pending_db_row_with_lock(context):
     row = _get_row_with_lock(context.session)
@@ -99,7 +98,7 @@ def get_oldest_pending_db_row_with_lock(context):
     return row
 
 
-@db_api.retry_db_errors
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_READER
 def get_all_monitoring_db_row_by_oldest(context):
     rows = context.session.query(sdn_journal_db.SdnJournal).filter_by(
@@ -108,7 +107,7 @@ def get_all_monitoring_db_row_by_oldest(context):
     return rows
 
 
-@oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES)
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def update_db_row_state(context, row, state):
     _update_db_row_state(context.session, row, state)
@@ -119,14 +118,14 @@ def _update_db_row_state(session, row, state):
     session.merge(row)
 
 
-@oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES)
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def update_db_row_job_id(context, row, job_id):
     row.job_id = job_id
     context.session.merge(row)
 
 
-@oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES)
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def update_pending_db_row_retry(context, row, retry_count):
     if row.retry_count >= retry_count and retry_count != -1:
@@ -138,7 +137,7 @@ def update_pending_db_row_retry(context, row, retry_count):
 
 # This function is currently not used.
 # Deleted resources are marked as 'deleted' in the database.
-@oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES)
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def delete_row(context, row=None, row_id=None):
     if row_id:
@@ -148,7 +147,7 @@ def delete_row(context, row=None, row_id=None):
         context.session.delete(row)
 
 
-@oslo_db_api.wrap_db_retry(max_retries=db_api.MAX_RETRIES)
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def create_pending_row(context, object_type, object_uuid,
                        operation, data):
@@ -171,20 +170,21 @@ def _update_maintenance_state(session, expected_state, state):
     return True
 
 
-@db_api.retry_db_errors
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def lock_maintenance(context):
     return _update_maintenance_state(context.session, sdn_const.PENDING,
                                      sdn_const.PROCESSING)
 
 
-@db_api.retry_db_errors
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def unlock_maintenance(context):
     return _update_maintenance_state(context.session, sdn_const.PROCESSING,
                                      sdn_const.PENDING)
 
 
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def update_maintenance_operation(context, operation=None):
     """Update the current maintenance operation details.
@@ -201,6 +201,7 @@ def update_maintenance_operation(context, operation=None):
     row.processing_operation = op_text
 
 
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def delete_rows_by_state_and_time(context, state, time_delta):
     now = context.session.execute(func.now()).scalar()
@@ -211,6 +212,7 @@ def delete_rows_by_state_and_time(context, state, time_delta):
     context.session.expire_all()
 
 
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def reset_processing_rows(context, max_timedelta):
     now = context.session.execute(func.now()).scalar()
