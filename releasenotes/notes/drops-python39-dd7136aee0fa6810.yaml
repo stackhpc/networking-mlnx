@@ -1,0 +1,6 @@
+---
+upgrade:
+  - |
+    Support for Python 3.9 has been dropped as it is no longer a `supported
+    OpenStack runtime
+    <https://governance.openstack.org/tc/reference/runtimes/2026.1.html>`_.
