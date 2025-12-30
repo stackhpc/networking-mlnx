@@ -13,32 +13,24 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import threading
-import time
-
+from neutron.worker import PeriodicWorker
 from neutron_lib import context
 from oslo_config import cfg
 from oslo_log import log as logging
 
 from networking_mlnx.db import db
 
-
 LOG = logging.getLogger(__name__)
 
 
-class MaintenanceThread(object):
+class MaintenanceWorker(PeriodicWorker):
     def __init__(self):
-        self.maintenance_thread = threading.Thread(
-            target=self._maintenance_loop)
         self.maintenance_interval = cfg.CONF.sdn.maintenance_interval
         self.maintenance_ops = []
-
-    def start(self):
-        # FIXME(wszumski): Need to implement a clean shutdown instead of using
-        # daemon threads. Currently DB operations hang indefinitely in the test
-        # framework, preventing tests from running to completition.
-        self.maintenance_thread.daemon = True
-        self.maintenance_thread.start()
+        # interval is in seconds
+        super(MaintenanceWorker, self).__init__(
+            interval=self.maintenance_interval,
+            check_func=self.run, initial_delay=self.maintenance_interval)
 
     def _execute_op(self, operation, context):
         op_details = operation.__name__
@@ -53,22 +45,6 @@ class MaintenanceThread(object):
         except Exception:
             LOG.exception("Failed during maintenance operation %s.",
                           op_details)
-
-    def _maintenance_loop(self):
-        while True:
-            try:
-                time.sleep(self.maintenance_interval)
-                self.execute_ops()
-            except cfg.NotInitializedError:
-                # FIXME(wszumski): Added to workaround noise in the
-                # test output. I'm assuming we hit this on startup/shutdown as
-                # oslo_config is not initialized. Revisit and find a better
-                # fix ...
-                LOG.debug(
-                    "Caught NotInitializedError: Assuming shutdown/startup")
-
-            except Exception as e:
-                LOG.exception("Exception in maintenance loop - %s", e)
 
     def execute_ops(self):
         LOG.info("Starting journal maintenance run.")
@@ -92,3 +68,12 @@ class MaintenanceThread(object):
         receive a DB session to use for DB operations.
         """
         self.maintenance_ops.append(f)
+
+    def run(self):
+        """This method is called automatically every 'interval' seconds. """
+        LOG.debug("Starting periodic sync task.")
+        try:
+            self.execute_ops()
+
+        except Exception as e:
+            LOG.exception("Exception in maintenance loop - %s", e)

@@ -16,7 +16,6 @@ from oslo_config import cfg
 
 from networking_mlnx._i18n import _
 
-
 interface_driver_opts = [
     cfg.StrOpt('ipoib_physical_interface',
            default="ib0",

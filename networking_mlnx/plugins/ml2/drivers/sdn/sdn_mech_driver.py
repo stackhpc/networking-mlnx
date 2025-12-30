@@ -82,6 +82,7 @@ class SDNMechanismDriver(api.MechanismDriver):
         list(neutron_const.ROUTER_INTERFACE_OWNERS_SNAT)
 
     def initialize(self):
+        self.maintenance_worker = maintenance.MaintenanceWorker()
         if self._is_sdn_sync_enabled():
             self.journal = journal.SdnJournalThread()
             self._start_maintenance_thread()
@@ -145,12 +146,10 @@ class SDNMechanismDriver(api.MechanismDriver):
         # (1) JournalCleanup - Delete completed rows from journal
         # (2) CleanupProcessing - Mark orphaned processing rows to pending
         cleanup_obj = cleanup.JournalCleanup()
-        self._maintenance_thread = maintenance.MaintenanceThread()
-        self._maintenance_thread.register_operation(
+        self.maintenance_worker.register_operation(
             cleanup_obj.delete_completed_rows)
-        self._maintenance_thread.register_operation(
+        self.maintenance_worker.register_operation(
             cleanup_obj.cleanup_processing_rows)
-        self._maintenance_thread.start()
 
     @staticmethod
     def _record_in_journal(context, object_type, operation, data=None):
@@ -421,3 +420,7 @@ class SDNMechanismDriver(api.MechanismDriver):
     def _get_network_qos_policy(self, context, net_id):
         return policy_object.QosPolicy.get_network_policy(
             context._plugin_context, net_id)
+
+    def get_workers(self):
+        # The ML2 plugin calls this to discover background tasks
+        return [self.maintenance_worker]
