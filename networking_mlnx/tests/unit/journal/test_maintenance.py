@@ -20,55 +20,29 @@ from neutron.tests.unit import testlib_api
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 
-from oslo_config import fixture
-
 from networking_mlnx.db.models import sdn_maintenance_db
 from networking_mlnx.journal import maintenance
 
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
-from networking_mlnx.plugins.ml2.drivers.sdn import sdn_mech_driver
 
 
 class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
     def setUp(self):
         super(MaintenanceThreadTestCase, self).setUp()
-        # 1. Setup the Database for functional testing
-        self.conf = self.useFixture(fixture.Config()).conf
-        # This helper sets up a clean SQLite/MySQL DB for the test
         self.db_context = context.get_admin_context()
-
-        # 2. Inject the required value
-        # You can use a dummy URL for functional tests that mock the backend
-        self.conf.set_override('url', 'http://127.0.0.1:8080', group='sdn')
-
-        # 2. Initialize the Driver
-        self.driver = sdn_mech_driver.SDNMechanismDriver()
-        self.driver.initialize()
-
         self.add_sdn_maintenance_row_with_pending_state()
-
-        # 3. Prevent the worker from starting a background thread automatically
-        # We want to trigger it manually to keep the test deterministic
-        mock.patch('oslo_service.loopingcall.FixedIntervalLoopingCall').start()
+        self.maintenance_worker = maintenance.MaintenanceWorker()
 
     def add_sdn_maintenance_row_with_pending_state(self):
         with db_api.CONTEXT_WRITER.using(self.db_context):
             row = sdn_maintenance_db.SdnMaintenance(state=sdn_const.PENDING)
             self.db_context.session.add(row)
 
-    def tearDown(self):
-        # 4. CRITICAL: Stop the worker before the DB schema is deleted
-        if hasattr(self.driver, 'maintenance_worker'):
-            self.driver.maintenance_worker.stop()
-            # Ensure the worker thread actually finishes
-            self.driver.maintenance_worker.wait()
-        super(MaintenanceThreadTestCase, self).tearDown()
-
     def test__execute_op_no_exception(self):
         with mock.patch.object(maintenance, 'LOG') as mock_log:
             operation = mock.MagicMock()
             operation.__name__ = "test"
-            self.driver.maintenance_worker._execute_op(
+            self.maintenance_worker._execute_op(
                 operation, self.db_context)
             self.assertTrue(operation.called)
             self.assertTrue(mock_log.info.called)
@@ -90,9 +64,9 @@ class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
             if count[0] > 1:
                 callback_event.set()
 
-        self.driver.maintenance_worker.register_operation(callback_op)
+        self.maintenance_worker.register_operation(callback_op)
         for _ in range(0, 2):
-            self.driver.maintenance_worker.run()
+            self.maintenance_worker.run()
 
         # Make sure the callback event was called and not timed out
         self.assertTrue(callback_event.wait(timeout=5))
@@ -110,9 +84,9 @@ class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
             callback_event.set()
 
         for op in [exception_op, callback_op]:
-            self.driver.maintenance_worker.register_operation(op)
+            self.maintenance_worker.register_operation(op)
 
-        self.driver.maintenance_worker.run()
+        self.maintenance_worker.run()
 
         # Make sure the callback event was called and not timed out
         self.assertTrue(callback_event.wait(timeout=5))
