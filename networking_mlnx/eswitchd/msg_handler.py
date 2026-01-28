@@ -208,6 +208,7 @@ class GetEswitchTables(BasicMessageHandler):
 
     def execute(self, eswitch_handler):
         fabric = self.msg.get('fabric', None)
+        fabrics = []
         if fabric:
             fabrics = [fabric]
         response = {'tables': eswitch_handler.get_eswitch_tables(fabrics)}

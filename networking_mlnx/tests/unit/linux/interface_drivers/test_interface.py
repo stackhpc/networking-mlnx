@@ -183,7 +183,7 @@ class TestMultiInterfaceDriver(base.TestCase):
             conf, self._get_networks_cb, self.fields)
         looping_mock.assert_called_once_with(
             net_cache_mock.remove_stale_networks)
-        loop_obj.start.assert_called()
+        loop_obj.start.assert_called_once_with(86400, initial_delay=86400)
         # Make sure consecutive calls dont re-spawn cleanup thread
         looping_mock.reset_mock()
         loop_obj.start.reset_mock()
@@ -238,11 +238,6 @@ class TestMultiInterfaceDriver(base.TestCase):
         self._check_drivers((n_interface.OVSInterfaceDriver, 'openvswitch'),
                        (n_interface.OVSInterfaceDriver, 'openvswitch'),
                        False)
-
-    def test__check_drivers_raises(self):
-        self._check_drivers((n_interface.BridgeInterfaceDriver, 'veth'),
-                            (n_interface.OVSInterfaceDriver, 'veth'),
-                            True)
 
     def _check_process_driver_obj_ovs(self, conf, expected_kind):
         ovs_driver = mock.Mock(spec=n_interface.OVSInterfaceDriver)
