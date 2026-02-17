@@ -1,1 +1,2 @@
-Sphinx>=9.0.0 # BSD
+reno>=4.1.0 # Apache-2.0
+Sphinx>=8.0.0 # BSD

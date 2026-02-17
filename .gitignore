@@ -1,5 +1,5 @@
 AUTHORS
-build/*
+build
 build-stamp
 ChangeLog
 cover/

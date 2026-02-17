@@ -1,4 +1,6 @@
+---
 - project:
     templates:
-        - build-openstack-docs-pti
-        - openstack-python3-jobs-neutron
+      - build-openstack-docs-pti
+      - openstack-python3-jobs-neutron
+      - release-notes-jobs-python3
