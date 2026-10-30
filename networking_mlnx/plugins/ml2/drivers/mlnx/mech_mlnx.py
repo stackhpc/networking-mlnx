@@ -89,11 +89,19 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                  "opt_value": client_id,
                  "ip_version": 4}]
 
+    def _is_gen_client_id(self, port, client_id):
+        # Accept either prefix, in case client_id_hardware has changed since
+        # the option was set.
+        return client_id in (
+            self._gen_client_id_with_prefix(port, HARDWARE_CLIENT_ID_PREFIX),
+            self._gen_client_id_with_prefix(port, LEGACY_CLIENT_ID_PREFIX))
+
     def _gen_none_client_id_opt(self, port):
         updated_extra_dhcp_opts = []
         for opt in port["extra_dhcp_opts"]:
-            # Keep any other options set by the user.
-            if opt["opt_name"] == edo_ext.DHCP_OPT_CLIENT_ID:
+            # Keep any other options, including a client-id set by the user.
+            if (opt["opt_name"] == edo_ext.DHCP_OPT_CLIENT_ID and
+                    self._is_gen_client_id(port, opt["opt_value"])):
                 opt["opt_value"] = None
             updated_extra_dhcp_opts.append(opt)
         return updated_extra_dhcp_opts
@@ -118,8 +126,10 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             return
         plugin = directory.get_plugin()
         if not updated_port["device_owner"]:
-            updated_port["extra_dhcp_opts"] = \
-                    self._gen_none_client_id_opt(updated_port)
+            extra_dhcp_opts = self._gen_none_client_id_opt(updated_port)
+            if all(opt["opt_value"] is not None for opt in extra_dhcp_opts):
+                return
+            updated_port["extra_dhcp_opts"] = extra_dhcp_opts
             plugin._update_extra_dhcp_opts_on_port(
                 context._plugin_context,
                 updated_port["id"],

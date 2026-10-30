@@ -219,6 +219,12 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
         update.assert_called_once()
         return update.call_args[0][2]['port']['extra_dhcp_opts']
 
+    def _assert_unbind_unchanged(self, extra_dhcp_opts):
+        _context = self._get_unbind_context(extra_dhcp_opts)
+        with mock.patch('neutron_lib.plugins.directory.get_plugin') as gp:
+            self.driver.update_port_precommit(_context)
+        gp.return_value._update_extra_dhcp_opts_on_port.assert_not_called()
+
     def test_precommit_unbind_keeps_other_opts(self):
         client_id_opt = self.driver._gen_client_id_opt(
             {'mac_address': '01:23:45:67:89:ab'})[0]
@@ -272,3 +278,21 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
             self.driver.update_port_precommit(_context)
         self.assertEqual(self.driver._gen_client_id_opt(_context.current),
                          _context.current['extra_dhcp_opts'])
+
+    def test_precommit_unbind_keeps_user_client_id(self):
+        self._assert_unbind_unchanged(
+            [{'opt_name': 'client-id', 'opt_value': 'user-value',
+              'ip_version': 4}])
+
+    def test_precommit_unbind_without_client_id(self):
+        self._assert_unbind_unchanged(
+            [{'opt_name': 'tftp-server', 'opt_value': '192.0.2.1',
+              'ip_version': 4}])
+
+    def test_precommit_unbind_removes_other_prefix_client_id(self):
+        self.conf.set_override('client_id_hardware', False, "mlnx")
+        client_id_opt = self.driver._gen_client_id_opt(
+            {'mac_address': '01:23:45:67:89:ab'})[0]
+        self.conf.set_override('client_id_hardware', True, "mlnx")
+        opts = self._unbind([dict(client_id_opt)])
+        self.assertEqual([dict(client_id_opt, opt_value=None)], opts)
