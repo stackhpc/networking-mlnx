@@ -62,6 +62,9 @@ def validate_port_operation(context, row):
             context, network_id, [sdn_const.POST])
         if ops:
             return False
+    if (row.operation == sdn_const.POST and
+            db.check_for_unfinished_delete_not_newer(context, row)):
+        return False
     return _is_valid_operation(context, row)
 
 

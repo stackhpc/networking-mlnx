@@ -962,6 +962,61 @@ class SdnDriverTestCase(SdnConfigBase):
         self.assertEqual(sdn_const.PENDING, row.state)
         self.assertEqual(1, row.retry_count)
 
+    @db_api.CONTEXT_WRITER
+    def _set_row_created_at(self, context, row, created_at):
+        row.created_at = created_at
+        context.session.merge(row)
+
+    def test_port_post_waits_for_delete_from_same_second(self):
+        # Moving a port to another host records the DELETE of its old
+        # binding and the POST of the new one, usually in the same second.
+        self._call_operation_object(sdn_const.POST, sdn_const.PORT)
+        post_row = db.get_all_db_rows(self.context)[0]
+        # Sync the POST first, if nothing stops it.
+        self._make_row_older(self.context, post_row)
+        context = self._get_mock_port_operation_context()
+        db.create_pending_row(self.context, sdn_const.PORT,
+                              context.current['id'], sdn_const.DELETE,
+                              context.current)
+        # Store the same second in both rows, as MySQL's DATETIME does.
+        now = datetime.datetime(2026, 10, 30, 12, 0, 0)
+        for row in db.get_all_db_rows(self.context):
+            self._set_row_created_at(self.context, row, now)
+
+        response = self._response(requests.codes.accepted, '"app/jobs/1"')
+        with mock.patch('requests.request',
+                        return_value=response) as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+
+        self.assertEqual(['DELETE'],
+                         [c[0][0] for c in mock_request.call_args_list])
+        rows = {r.operation: r for r in db.get_all_db_rows(self.context)}
+        self.assertEqual(sdn_const.PENDING, rows[sdn_const.POST].state)
+        self.assertEqual(sdn_const.MONITORING, rows[sdn_const.DELETE].state)
+
+    def test_failed_delete_job_stops_holding_post(self):
+        # A failed job counts towards retry_count, so the DELETE ends FAILED
+        # and stops holding the POST that waits for it.
+        self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
+        self.thread = journal.SdnJournalThread()
+        context = self._get_mock_port_operation_context()
+        db.create_pending_row(self.context, sdn_const.PORT,
+                              context.current['id'], sdn_const.DELETE,
+                              context.current)
+        row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+
+        response = self._response(requests.codes.ok,
+                                  jsonutils.dumps({'Status': 'Failed'}))
+        with mock.patch('requests.request', return_value=response):
+            self.thread._sync_progress_rows(self.context)
+
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.FAILED, row.state)
+        self.assertFalse(db.check_for_pending_or_processing_ops(
+            self.context, row.object_uuid))
+
     def test_cleanup_deletes_old_failed_rows(self):
         self._call_operation_object(sdn_const.POST, sdn_const.NETWORK)
         row = db.get_all_db_rows(self.context)[0]

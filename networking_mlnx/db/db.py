@@ -62,6 +62,16 @@ def check_for_pending_delete_ops_with_parent(context, object_type, parent_id):
     return False
 
 
+def _get_created_at(context, row):
+    # Compare with the stored value rather than row.created_at, which the
+    # database may format differently when it is sent back as a parameter.
+    # SQLite stores it without fractional seconds, but compares it as text
+    # with a parameter that has them.
+    return context.session.query(
+        sdn_journal_db.SdnJournal.created_at).filter(
+        sdn_journal_db.SdnJournal.id == row.id).scalar_subquery()
+
+
 @db_api.CONTEXT_READER
 def check_for_older_ops(context, row):
     q = context.session.query(sdn_journal_db.SdnJournal).filter(
@@ -77,15 +87,25 @@ def check_for_newer_ops(context, row, operation):
     # created_at only has a resolution of a second, so a row created in the
     # same second counts as newer. Callers use this to ignore stale rows, so
     # erring this way can only make them ignore a row.
-    # Compare with the stored value rather than row.created_at, which the
-    # database may format differently when it is sent back as a parameter.
-    created_at = context.session.query(
-        sdn_journal_db.SdnJournal.created_at).filter(
-        sdn_journal_db.SdnJournal.id == row.id).scalar_subquery()
     q = context.session.query(sdn_journal_db.SdnJournal).filter(
         sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
         sdn_journal_db.SdnJournal.operation == operation,
-        sdn_journal_db.SdnJournal.created_at >= created_at,
+        sdn_journal_db.SdnJournal.created_at >= _get_created_at(context, row),
+        sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def check_for_unfinished_delete_not_newer(context, row):
+    # check_for_older_ops() can't order rows created in the same second,
+    # which is the norm for the DELETE of a port's old binding and the POST
+    # of its new one. Sending the POST first would let the DELETE remove the
+    # port from the partition key after its POST has completed.
+    q = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
+        sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
+        sdn_journal_db.SdnJournal.operation == sdn_const.DELETE,
+        sdn_journal_db.SdnJournal.created_at <= _get_created_at(context, row),
         sdn_journal_db.SdnJournal.id != row.id)
     return context.session.query(q.exists()).scalar()
 
