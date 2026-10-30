@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 import unittest.mock as mock
 
 from neutron.tests import base
@@ -231,6 +232,43 @@ class TestEswitchAgent(base.BaseTestCase):
     def test_add_port_update(self):
         self.agent.add_port_update(self.VNIC_PORT_1)
         self.assertEqual(set([self.VNIC_PORT_1]), self.agent.updated_ports)
+
+    def test_port_update_during_scan_is_not_lost(self):
+        adding = threading.Event()
+        resume = threading.Event()
+
+        class PausingSet(set):
+            # Pause the RPC thread after it has loaded updated_ports but
+            # before its add() takes effect.
+            def add(self, item):
+                adding.set()
+                resume.wait(10)
+                super(PausingSet, self).add(item)
+
+        vnics = set([self.VNIC_PORT_1, self.VNIC_PORT_2])
+        self.agent.eswitch.get_vnics.return_value = vnics
+        self.agent.updated_ports = PausingSet()
+        previous = dict(current=vnics, added=set(), removed=set(),
+                        updated=set())
+        rpc = threading.Thread(target=self.agent.add_port_update,
+                               args=(self.VNIC_PORT_2,))
+        rpc.start()
+        self.assertTrue(adding.wait(10))
+
+        results = []
+        scan = threading.Thread(
+            target=lambda: results.append(
+                self.agent.scan_ports(previous, sync=False)))
+        scan.start()
+        scan.join(0.1)
+        resume.set()
+        rpc.join()
+        scan.join()
+
+        # The update must be seen by this scan or the next one.
+        next_info = self.agent.scan_ports(results[0], sync=False)
+        self.assertEqual(set([self.VNIC_PORT_2]),
+                         results[0]['updated'] | next_info['updated'])
 
     def _mock_scan_ports(self, vif_port_set, previous,
                          updated_ports, sync=False):

@@ -16,6 +16,7 @@
 
 import socket
 import sys
+import threading
 import time
 
 from neutron.agent import rpc as agent_rpc
@@ -207,6 +208,9 @@ class MlnxEswitchNeutronAgent(object):
             'start_flag': True}
         # Stores port update notifications for processing in main rpc loop
         self.updated_ports = set()
+        # The RPC callbacks run in their own threads, so guard the hand-over
+        # of updated_ports to the main loop.
+        self._updated_ports_lock = threading.Lock()
         # A pci to mac dict used to cache port_update information from
         # neutron server.
         self.port_pci_to_mac_cache = dict()
@@ -257,10 +261,11 @@ class MlnxEswitchNeutronAgent(object):
             heartbeat.start(interval=report_interval)
 
     def add_port_update(self, port):
-        self.updated_ports.add(port)
         # hack to deal with the fact that eswitchd returns invalid macs
         port_mac, port_pci = port
         self.port_pci_to_mac_cache[port_pci] = port_mac
+        with self._updated_ports_lock:
+            self.updated_ports.add(port)
 
     def fix_eswitchd_vnic_macs(self, eswitchd_ports, neutron_updated_ports):
         # NOTE(adrianc): eswitchd service may return ports with invalid
@@ -292,12 +297,12 @@ class MlnxEswitchNeutronAgent(object):
         return fixed_ports
 
     def scan_ports(self, previous, sync):
-        # NOTE(adrianc): Save self.updated_ports and clear it for next
-        # iteration. This is threadsafe as greenthreads should not yield
-        # between the two operations. We should really consider relying
-        # less on greenthread black magic.
-        updated_ports = self.updated_ports
-        self.updated_ports = set()
+        # Save self.updated_ports and clear it for the next iteration. Hold
+        # the lock so that a concurrent add_port_update() cannot add to the
+        # old set after it has been read.
+        with self._updated_ports_lock:
+            updated_ports = self.updated_ports
+            self.updated_ports = set()
         cur_ports = self.fix_eswitchd_vnic_macs(self.eswitch.get_vnics(),
                                                 self.port_pci_to_mac_cache)
         port_info = {'current': cur_ports}
