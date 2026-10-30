@@ -61,7 +61,6 @@ function configure_neutron_ml2_mlnx {
             iniset /$Q_PLUGIN_CONF_FILE sdn bind_normal_ports True
             iniset /$Q_PLUGIN_CONF_FILE sdn sync_enabled False
         fi
-        iniset /$Q_PLUGIN_CONF_FILE securitygroup noop
     fi
     if is_service_enabled eswitchd; then
         configure_eswitchd
