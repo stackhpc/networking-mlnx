@@ -32,6 +32,10 @@ from networking_mlnx.plugins.ml2.drivers.sdn import utils as sdn_utils
 
 LOG = logging.getLogger(__name__)
 
+# The longest time to wait before sending a failed request again, unless
+# [sdn] sync_timeout is longer.
+MAX_RETRY_DELAY = 300
+
 
 def call_thread_on_end(func):
     def new_func(obj, *args, **kwargs):
@@ -53,6 +57,7 @@ class SdnJournalThread(object):
         self.client = client.SdnRestClient.create_client()
         self._sync_timeout = cfg.CONF.sdn.sync_timeout
         self._row_retry_count = cfg.CONF.sdn.retry_count
+        self._retry_delays = self._get_retry_delays(self._sync_timeout)
         self.event = threading.Event()
         self.lock = threading.Lock()
         self._sync_thread = self.start_sync_thread()
@@ -108,6 +113,24 @@ class SdnJournalThread(object):
                 # Catch exceptions to protect the thread while running
                 LOG.exception("Error on run_sync_thread")
 
+    @staticmethod
+    def _get_retry_delays(sync_timeout):
+        """The minimum time to wait before each retry, in seconds.
+
+        It starts at sync_timeout and doubles with each retry, up to
+        MAX_RETRY_DELAY or sync_timeout if that is longer, so that a request
+        that keeps failing isn't sent again on every sync. The last delay
+        applies to all later retries.
+        """
+        delays = []
+        delay = max(sync_timeout, 1)
+        max_delay = max(MAX_RETRY_DELAY, delay)
+        while delay < max_delay:
+            delays.append(delay)
+            delay *= 2
+        delays.append(max_delay)
+        return delays
+
     def _sync_pending_rows(self, context, exit_after_run):
         # IDs of rows that have to wait for another operation. Don't fetch
         # them again in this run, so that it ends when every remaining row
@@ -118,7 +141,8 @@ class SdnJournalThread(object):
             LOG.debug("sync_pending_rows operation walking database")
             row, valid = db.get_oldest_valid_pending_db_row_with_lock(
                 context, dependency_validations.validate,
-                exclude_ids=skipped_row_ids)
+                exclude_ids=skipped_row_ids,
+                retry_delays=self._retry_delays)
             if not row:
                 LOG.debug("No rows to sync")
                 break

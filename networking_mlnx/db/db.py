@@ -16,8 +16,10 @@ import datetime
 
 from neutron_lib.db import api as db_api
 from oslo_serialization import jsonutils
+from sqlalchemy import and_
 from sqlalchemy import asc
 from sqlalchemy import func
+from sqlalchemy import or_
 
 from networking_mlnx.db.models import sdn_journal_db
 from networking_mlnx.db.models import sdn_maintenance_db
@@ -79,12 +81,33 @@ def get_all_db_rows_by_state(context, state):
         state=state).all()
 
 
-def _get_row_with_lock(session, exclude_ids=()):
+def _retry_due(now, retry_delays):
+    """A filter for rows that have no retries or whose retry is due.
+
+    retry_delays[i] is the delay in seconds before retry i + 1. The last
+    delay also applies to later retries.
+    """
+    journal = sdn_journal_db.SdnJournal
+    clauses = [journal.retry_count == 0]
+    for retry, delay in enumerate(retry_delays, 1):
+        retry_match = (journal.retry_count >= retry
+                       if retry == len(retry_delays)
+                       else journal.retry_count == retry)
+        clauses.append(and_(
+            retry_match,
+            journal.last_retried <= now - datetime.timedelta(seconds=delay)))
+    return or_(*clauses)
+
+
+def _get_row_with_lock(session, exclude_ids=(), retry_delays=()):
     query = session.query(sdn_journal_db.SdnJournal).filter_by(
         state=sdn_const.PENDING)
     if exclude_ids:
         query = query.filter(
             ~sdn_journal_db.SdnJournal.id.in_(exclude_ids))
+    if retry_delays:
+        now = session.execute(func.now()).scalar()
+        query = query.filter(_retry_due(now, retry_delays))
     row = query.order_by(
         asc(sdn_journal_db.SdnJournal.last_retried)).with_for_update(
     ).first()
@@ -107,15 +130,17 @@ def get_oldest_pending_db_row_with_lock(context, exclude_ids=()):
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def get_oldest_valid_pending_db_row_with_lock(context, validate,
-                                              exclude_ids=()):
+                                              exclude_ids=(),
+                                              retry_delays=()):
     """Lock the oldest pending row, and mark it processing if it's valid.
 
     Returns the row, or None if there is no pending row, and the result of
     validate(context, row). A row that has to wait for other operations is
     left unchanged, so that it isn't rewritten on every sync. validate()
-    runs while the row is locked.
+    runs while the row is locked. Rows whose retry isn't due yet, as given
+    by retry_delays (see _retry_due), are not considered.
     """
-    row = _get_row_with_lock(context.session, exclude_ids)
+    row = _get_row_with_lock(context.session, exclude_ids, retry_delays)
     if not row:
         return None, False
     valid = validate(context, row)

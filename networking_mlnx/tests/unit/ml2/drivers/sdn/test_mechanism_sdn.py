@@ -704,6 +704,57 @@ class SdnDriverTestCase(SdnConfigBase):
         self.assertEqual(network_row.id, row.id)
         self.assertEqual(last_retried, row.last_retried)
 
+    def test_get_retry_delays(self):
+        self.assertEqual([10, 20, 40, 80, 160, journal.MAX_RETRY_DELAY],
+                         journal.SdnJournalThread._get_retry_delays(10))
+        self.assertEqual([journal.MAX_RETRY_DELAY],
+                         journal.SdnJournalThread._get_retry_delays(
+                             journal.MAX_RETRY_DELAY))
+        # A sync_timeout longer than MAX_RETRY_DELAY is the only delay.
+        self.assertEqual([600],
+                         journal.SdnJournalThread._get_retry_delays(600))
+        # Values below one second can't loop forever.
+        for sync_timeout in (0, -10):
+            delays = journal.SdnJournalThread._get_retry_delays(sync_timeout)
+            self.assertEqual(1, delays[0])
+            self.assertEqual(journal.MAX_RETRY_DELAY, delays[-1])
+
+    @db_api.CONTEXT_WRITER
+    def _set_row_retry(self, context, row, retry_count, last_retried):
+        row.retry_count = retry_count
+        row.last_retried = last_retried
+        context.session.merge(row)
+
+    def _test_sync_retried_row(self, seconds_ago):
+        self._call_operation_object(sdn_const.PUT, sdn_const.NETWORK)
+        row = db.get_all_db_rows(self.context)[0]
+        last_retried = (datetime.datetime.utcnow().replace(microsecond=0) -
+                        datetime.timedelta(seconds=seconds_ago))
+        self._set_row_retry(self.context, row, 3, last_retried)
+
+        response = self._response(requests.codes.accepted, '"app/jobs/1"')
+        with self._limit_row_fetches(), \
+                mock.patch('requests.request',
+                           return_value=response) as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+        return mock_request, last_retried
+
+    def test_sync_pending_rows_waits_before_retry(self):
+        # The third retry waits four sync intervals.
+        mock_request, last_retried = self._test_sync_retried_row(
+            seconds_ago=cfg.CONF.sdn.sync_timeout)
+        mock_request.assert_not_called()
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.PENDING, row.state)
+        self.assertEqual(last_retried, row.last_retried)
+
+    def test_sync_pending_rows_retries_after_delay(self):
+        mock_request, _ = self._test_sync_retried_row(
+            seconds_ago=4 * cfg.CONF.sdn.sync_timeout + 1)
+        self.assertEqual(1, mock_request.call_count)
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.MONITORING, row.state)
+
     def test_sync_pending_rows_stops_when_all_rows_wait(self):
         # The network deletion waits for the port deletion, which the
         # controller is still running. The sync must return, so that the

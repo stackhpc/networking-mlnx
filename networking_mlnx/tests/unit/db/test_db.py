@@ -21,6 +21,7 @@ from neutron.tests.unit import testlib_api
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from oslo_db import exception
+from sqlalchemy import func
 
 from networking_mlnx.db import db
 from networking_mlnx.db.models import sdn_journal_db
@@ -39,7 +40,9 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         self.addCleanup(self._db_cleanup)
 
     def _db_cleanup(self):
-        self.db_context.session.query(sdn_journal_db.SdnJournal).delete()
+        with db_api.CONTEXT_WRITER.using(self.db_context):
+            self.db_context.session.query(
+                sdn_journal_db.SdnJournal).delete()
 
     def _update_row(self, row):
         with db_api.CONTEXT_WRITER.using(self.db_context):
@@ -183,6 +186,39 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         row = db.get_all_db_rows(self.db_context)[0]
         self.assertEqual(sdn_const.PENDING, row.state)
         self.assertEqual(old_row.last_retried, row.last_retried)
+
+    @db_api.CONTEXT_WRITER
+    def _set_retry(self, context, retry_count, seconds_ago):
+        row = context.session.query(sdn_journal_db.SdnJournal).one()
+        now = context.session.execute(func.now()).scalar()
+        row.retry_count = retry_count
+        row.last_retried = now - timedelta(seconds=seconds_ago)
+        return row.id
+
+    def _test_retry_due(self, retry_count, seconds_ago, retry_delays):
+        self._db_cleanup()
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row_id = self._set_retry(self.db_context, retry_count, seconds_ago)
+        row, _ = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, mock.Mock(return_value=True),
+            retry_delays=retry_delays)
+        if row is None:
+            return False
+        self.assertEqual(row_id, row.id)
+        return True
+
+    def test_get_oldest_valid_pending_row_retry_due(self):
+        delays = [30, 60, 120]
+        self.assertTrue(self._test_retry_due(0, 0, delays))
+        self.assertFalse(self._test_retry_due(1, 0, delays))
+        self.assertTrue(self._test_retry_due(1, 40, delays))
+        self.assertFalse(self._test_retry_due(2, 40, delays))
+        self.assertTrue(self._test_retry_due(2, 70, delays))
+        # The last delay applies from its own retry onwards.
+        self.assertFalse(self._test_retry_due(3, 70, delays))
+        self.assertTrue(self._test_retry_due(3, 130, delays))
+        self.assertFalse(self._test_retry_due(5, 70, delays))
+        self.assertTrue(self._test_retry_due(5, 130, delays))
 
     def test_get_all_monitoring_db_row_by_oldest_order(self):
         db.create_pending_row(self.db_context, *self.UPDATE_ROW)
