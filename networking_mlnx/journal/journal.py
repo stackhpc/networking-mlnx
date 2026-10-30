@@ -109,9 +109,15 @@ class SdnJournalThread(object):
                 LOG.exception("Error on run_sync_thread")
 
     def _sync_pending_rows(self, context, exit_after_run):
+        # IDs of rows that have to wait for another operation. Don't fetch
+        # them again in this run, so that it ends when every remaining row
+        # is waiting, and _sync_progress_rows can check the jobs that they
+        # are waiting for.
+        skipped_row_ids = set()
         while True:
             LOG.debug("sync_pending_rows operation walking database")
-            row = db.get_oldest_pending_db_row_with_lock(context)
+            row = db.get_oldest_pending_db_row_with_lock(
+                context, exclude_ids=skipped_row_ids)
             if not row:
                 LOG.debug("No rows to sync")
                 break
@@ -129,6 +135,7 @@ class SdnJournalThread(object):
 
                 if exit_after_run:
                     break
+                skipped_row_ids.add(row.id)
                 continue
 
             LOG.info("Syncing %(operation)s %(type)s %(uuid)s",
@@ -246,18 +253,26 @@ class SdnJournalThread(object):
                         db.update_db_row_state(
                             context, row, sdn_const.PENDING)
                     except (ValueError, AttributeError):
-                        LOG.error("failed to extract response for job"
+                        # Send the request again, up to retry_count times,
+                        # rather than monitor a job that can't be read,
+                        # because other operations may be waiting for it.
+                        LOG.error("failed to extract response for job "
                                   "id %s", row.job_id)
+                        db.update_pending_db_row_retry(
+                            context, row, self._row_retry_count)
                 else:
                     LOG.error("SDN Controller Job id %(job_id)s, failed with "
-                              "%(status)s",
-                              {'job_id': row.job_id, 'status': job_status})
-                    db.update_db_row_state(context, row, sdn_const.PENDING)
+                              "HTTP status %(status)s",
+                              {'job_id': row.job_id,
+                               'status': response.status_code})
+                    db.update_pending_db_row_retry(context, row,
+                                                   self._row_retry_count)
 
             except sdn_exc.SDNRequestError as e:
                 LOG.error("Failed to get SDN Controller job %(job_id)s: "
                           "%(error)s", {'job_id': row.job_id, 'error': e})
-                db.update_db_row_state(context, row, sdn_const.PENDING)
+                db.update_pending_db_row_retry(context, row,
+                                               self._row_retry_count)
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Don't raise the retry count, just log an error
                 LOG.error("Cannot connect to the SDN Controller")

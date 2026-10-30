@@ -30,7 +30,7 @@ def validate_network_operation(context, row):
     """Validate the network operation based on dependencies.
 
     Validate network operation depending on whether it's dependencies
-    are still in 'pending' or 'processing' state. e.g.
+    are still in 'pending', 'processing' or 'monitoring' state. e.g.
     """
     if row.operation == sdn_const.DELETE:
         # Check for any pending or processing create or update
@@ -52,7 +52,7 @@ def validate_port_operation(context, row):
     """Validate port operation based on dependencies.
 
     Validate port operation depending on whether it's dependencies
-    are still in 'pending' or 'processing' state. e.g.
+    are still in 'pending', 'processing' or 'monitoring' state. e.g.
     """
     if row.operation in (sdn_const.POST, sdn_const.PUT):
         network_dict = jsonutils.loads(row.data)

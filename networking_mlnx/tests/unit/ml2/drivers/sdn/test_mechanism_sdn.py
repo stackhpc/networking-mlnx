@@ -453,16 +453,34 @@ class SdnDriverTestCase(SdnConfigBase):
         self.assertEqual(3, len(rows))
 
     def _test_object_type_pending_network(self, object_type):
-        # Create a network (creates db row in pending state).
-        self._call_operation_object(sdn_const.POST,
-                                    sdn_const.NETWORK)
+        # Create a network and an object_type on it (creates db rows in
+        # pending state).
+        self._call_operation_object(sdn_const.POST, sdn_const.NETWORK)
+        self._call_operation_object(sdn_const.POST, object_type)
 
-        # Create object_type database row and process. This results in both
-        # the object_type and network rows being processed.
-        self._test_thread_processing(sdn_const.POST, object_type,
-                                     expected_calls=2)
+        def request(method, url, **kwargs):
+            if method == sdn_const.GET:
+                return self._response(requests.codes.ok,
+                                      '{"Status": "Completed"}')
+            return self._response(requests.codes.accepted, '"app/jobs/1"')
 
-        # Verify both rows are now marked as completed.
+        def sync():
+            with self._limit_row_fetches(), \
+                    mock.patch('requests.request',
+                               side_effect=request) as mock_request:
+                self.thread._sync_pending_rows(self.context, False)
+                self.thread._sync_progress_rows(self.context)
+            return [c.args[0] + ' ' + c.kwargs['url'].rsplit('/', 1)[-1]
+                    for c in mock_request.call_args_list]
+
+        # The object_type waits until the controller has created the
+        # network, so the first sync only sends the network.
+        self.assertEqual(['POST Network', 'GET 1'], sync())
+        rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
+        self.assertEqual([object_type], [r.object_type for r in rows])
+
+        url_object_type = object_type.replace('_', '-').title()
+        self.assertEqual(['POST ' + url_object_type, 'GET 1'], sync())
         rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(2, len(rows))
@@ -478,15 +496,16 @@ class SdnDriverTestCase(SdnConfigBase):
             object_type, operation, object_type, pending_operation)
 
     def _test_object_operation_pending_another_object_operation(
-        self, object_type, operation, pending_type, pending_operation):
+        self, object_type, operation, pending_type, pending_operation,
+        pending_state=sdn_const.PROCESSING):
         # Create the object_type (creates db row in pending state).
         self._call_operation_object(pending_operation,
                                     pending_type)
 
-        # Get pending row and mark as processing so that
+        # Get pending row and mark as processing (or monitoring) so that
         # this row will not be processed by journal thread.
         row = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
-        db.update_db_row_state(self.context, row[0], sdn_const.PROCESSING)
+        db.update_db_row_state(self.context, row[0], pending_state)
 
         # Create the object_type database row and process.
         # Verify that object request is not processed because the
@@ -496,8 +515,7 @@ class SdnDriverTestCase(SdnConfigBase):
                                      expected_calls=0)
 
         # Verify that all rows are still in the database.
-        rows = db.get_all_db_rows_by_state(self.context,
-                                           sdn_const.PROCESSING)
+        rows = db.get_all_db_rows_by_state(self.context, pending_state)
         self.assertEqual(1, len(rows))
         rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
         self.assertEqual(1, len(rows))
@@ -550,6 +568,119 @@ class SdnDriverTestCase(SdnConfigBase):
     def test_network_delete_pending_port_delete(self):
         self._test_parent_delete_pending_child_delete(
             sdn_const.NETWORK, sdn_const.PORT)
+
+    def test_network_delete_monitoring_port_delete(self):
+        # UFM rejects deleting a network while its port deletion job runs.
+        self._test_object_operation_pending_another_object_operation(
+            sdn_const.NETWORK, sdn_const.DELETE, sdn_const.PORT,
+            sdn_const.DELETE, pending_state=sdn_const.MONITORING)
+
+    def test_network_delete_monitoring_network_create(self):
+        self._test_object_operation_pending_another_object_operation(
+            sdn_const.NETWORK, sdn_const.DELETE, sdn_const.NETWORK,
+            sdn_const.POST, pending_state=sdn_const.MONITORING)
+
+    def test_port_monitoring_network(self):
+        self._test_object_operation_pending_another_object_operation(
+            sdn_const.PORT, sdn_const.POST, sdn_const.NETWORK,
+            sdn_const.POST, pending_state=sdn_const.MONITORING)
+
+    def test_port_delete_monitoring_port_create(self):
+        self._test_object_operation_pending_another_object_operation(
+            sdn_const.PORT, sdn_const.DELETE, sdn_const.PORT,
+            sdn_const.POST, pending_state=sdn_const.MONITORING)
+
+    def _limit_row_fetches(self, limit=20):
+        """Fail, rather than hang, if a sync run never ends."""
+        get_row = db.get_oldest_pending_db_row_with_lock
+        calls = []
+
+        def get_row_with_limit(*args, **kwargs):
+            calls.append(None)
+            if len(calls) > limit:
+                raise AssertionError('The sync run did not end')
+            return get_row(*args, **kwargs)
+
+        return mock.patch.object(db, 'get_oldest_pending_db_row_with_lock',
+                                 side_effect=get_row_with_limit)
+
+    @db_api.CONTEXT_WRITER
+    def _set_row_time(self, context, row, last_retried):
+        row.last_retried = last_retried
+        context.session.merge(row)
+
+    def test_sync_pending_rows_skips_waiting_row_with_same_time(self):
+        # A waiting row is put back with a new last_retried time, which can
+        # be equal to that of the other rows. A ready row must still be
+        # synced in the same run.
+        self._call_operation_object(sdn_const.DELETE, sdn_const.PORT)
+        port_row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_state(self.context, port_row, sdn_const.MONITORING)
+        # Waits for the port deletion.
+        self._call_operation_object(sdn_const.DELETE, sdn_const.NETWORK)
+        # Ready: an update of another network.
+        context = self._get_mock_network_operation_context()
+        context.current['id'] = uuidutils.generate_uuid()
+        self.mech.update_network_precommit(context)
+        now = datetime.datetime.utcnow().replace(microsecond=0)
+        for row in db.get_all_db_rows_by_state(self.context,
+                                               sdn_const.PENDING):
+            self._set_row_time(self.context, row, now)
+
+        response = self._response(requests.codes.accepted, '"app/jobs/1"')
+        with self._limit_row_fetches(), \
+                mock.patch('requests.request',
+                           return_value=response) as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+
+        self.assertEqual(1, mock_request.call_count)
+        self.assertTrue(mock_request.call_args.kwargs['url'].endswith(
+            context.current['id']))
+        rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
+        self.assertEqual([sdn_const.NETWORK], [r.object_type for r in rows])
+        self.assertEqual(sdn_const.DELETE, rows[0].operation)
+
+    def _test_sync_progress_row(self, response):
+        self._call_operation_object(sdn_const.POST, sdn_const.NETWORK)
+        row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+
+        with mock.patch('requests.request', return_value=response):
+            self.thread._sync_progress_rows(self.context)
+
+        # The request is sent again, rather than monitored forever, and this
+        # counts against retry_count.
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.PENDING, row.state)
+        self.assertEqual(1, row.retry_count)
+
+    def test_sync_progress_rows_unreadable_job(self):
+        for text in ('not json', '["Completed"]'):
+            self._test_sync_progress_row(
+                self._response(requests.codes.ok, text))
+            self._db_cleanup()
+
+    def test_sync_progress_rows_job_not_implemented(self):
+        self._test_sync_progress_row(
+            self._response(requests.codes.not_implemented))
+
+    def test_sync_pending_rows_stops_when_all_rows_wait(self):
+        # The network deletion waits for the port deletion, which the
+        # controller is still running. The sync must return, so that the
+        # job can be checked, rather than skip the same row forever.
+        self._call_operation_object(sdn_const.DELETE, sdn_const.PORT)
+        port_row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_state(self.context, port_row, sdn_const.MONITORING)
+        self._call_operation_object(sdn_const.DELETE, sdn_const.NETWORK)
+
+        with self._limit_row_fetches(), \
+                mock.patch('requests.request') as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+
+        mock_request.assert_not_called()
+        rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
+        self.assertEqual([sdn_const.NETWORK], [r.object_type for r in rows])
 
     def test_port(self):
         self._test_object_type(sdn_const.PORT)
@@ -709,7 +840,8 @@ class SdnDriverTestCase(SdnConfigBase):
             requests.codes.bad_request,
             'Network ID cannot be removed because it is associated to one '
             'or more hosts')
-        with mock.patch('requests.request', return_value=response):
+        with self._limit_row_fetches(), \
+                mock.patch('requests.request', return_value=response):
             self.thread._sync_pending_rows(self.context, False)
 
         row = db.get_all_db_rows(self.context)[0]

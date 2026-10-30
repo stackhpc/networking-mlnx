@@ -18,18 +18,22 @@ from neutron_lib.db import api as db_api
 from oslo_serialization import jsonutils
 from sqlalchemy import asc
 from sqlalchemy import func
-from sqlalchemy import or_
 
 from networking_mlnx.db.models import sdn_journal_db
 from networking_mlnx.db.models import sdn_maintenance_db
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 
+# States of operations that the SDN controller may not have finished yet.
+# Operations that depend on them must wait, including while the controller
+# is still running the job for an accepted request (MONITORING).
+_UNFINISHED_STATES = (sdn_const.PENDING, sdn_const.PROCESSING,
+                      sdn_const.MONITORING)
+
 
 @db_api.CONTEXT_READER
 def check_for_pending_or_processing_ops(context, object_uuid, operation=None):
     q = context.session.query(sdn_journal_db.SdnJournal).filter(
-        or_(sdn_journal_db.SdnJournal.state == sdn_const.PENDING,
-            sdn_journal_db.SdnJournal.state == sdn_const.PROCESSING),
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
         sdn_journal_db.SdnJournal.object_uuid == object_uuid)
     if operation:
         if isinstance(operation, (list, tuple)):
@@ -42,8 +46,7 @@ def check_for_pending_or_processing_ops(context, object_uuid, operation=None):
 @db_api.CONTEXT_READER
 def check_for_pending_delete_ops_with_parent(context, object_type, parent_id):
     rows = context.session.query(sdn_journal_db.SdnJournal).filter(
-        or_(sdn_journal_db.SdnJournal.state == sdn_const.PENDING,
-            sdn_journal_db.SdnJournal.state == sdn_const.PROCESSING),
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
         sdn_journal_db.SdnJournal.object_type == object_type,
         sdn_journal_db.SdnJournal.operation == sdn_const.DELETE
     ).all()
@@ -58,8 +61,7 @@ def check_for_pending_delete_ops_with_parent(context, object_type, parent_id):
 @db_api.CONTEXT_READER
 def check_for_older_ops(context, row):
     q = context.session.query(sdn_journal_db.SdnJournal).filter(
-        or_(sdn_journal_db.SdnJournal.state == sdn_const.PENDING,
-            sdn_journal_db.SdnJournal.state == sdn_const.PROCESSING),
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
         sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
         sdn_journal_db.SdnJournal.created_at < row.created_at,
         sdn_journal_db.SdnJournal.id != row.id)
@@ -77,9 +79,13 @@ def get_all_db_rows_by_state(context, state):
         state=state).all()
 
 
-def _get_row_with_lock(session):
-    row = session.query(sdn_journal_db.SdnJournal).filter_by(
-        state=sdn_const.PENDING).order_by(
+def _get_row_with_lock(session, exclude_ids=()):
+    query = session.query(sdn_journal_db.SdnJournal).filter_by(
+        state=sdn_const.PENDING)
+    if exclude_ids:
+        query = query.filter(
+            ~sdn_journal_db.SdnJournal.id.in_(exclude_ids))
+    row = query.order_by(
         asc(sdn_journal_db.SdnJournal.last_retried)).with_for_update(
     ).first()
     return row
@@ -91,8 +97,8 @@ def _get_row_with_lock(session):
 # of them will get a deadlock from Galera and will have to retry the operation.
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
-def get_oldest_pending_db_row_with_lock(context):
-    row = _get_row_with_lock(context.session)
+def get_oldest_pending_db_row_with_lock(context, exclude_ids=()):
+    row = _get_row_with_lock(context.session, exclude_ids)
     if row:
         _update_db_row_state(context.session, row, sdn_const.PROCESSING)
     return row
