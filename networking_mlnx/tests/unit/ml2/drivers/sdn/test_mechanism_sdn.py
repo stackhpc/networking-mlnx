@@ -649,6 +649,83 @@ class SdnDriverTestCase(SdnConfigBase):
         self.assertEqual([{'opt_name': 'client-id', 'opt_value': CLIENT_ID,
                            'ip_version': 4}], opts)
 
+    @staticmethod
+    def _response(status_code, text=''):
+        response = requests.Response()
+        response.status_code = status_code
+        response._content = text.encode()
+        response.url = cfg.CONF.sdn.url
+        return response
+
+    @db_api.CONTEXT_WRITER
+    def _make_row_older(self, context, row):
+        row.last_retried -= datetime.timedelta(hours=1)
+        context.session.merge(row)
+
+    def _sync_port_and_network_rows(self, port_status_code):
+        self._call_operation_object(sdn_const.POST, sdn_const.PORT)
+        # Make the port row the oldest, so that it is synced first.
+        self._make_row_older(self.context,
+                             db.get_all_db_rows(self.context)[0])
+        self._call_operation_object(sdn_const.PUT, sdn_const.NETWORK)
+
+        def request(method, url, **kwargs):
+            if url.endswith("/Port"):
+                return self._response(port_status_code,
+                                      'Missing attribute(s): client-id')
+            return self._response(requests.codes.accepted, '"app/jobs/1"')
+
+        with mock.patch('requests.request',
+                        side_effect=request) as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+        rows = {row.object_type: row
+                for row in db.get_all_db_rows(self.context)}
+        return mock_request, rows[sdn_const.PORT], rows[sdn_const.NETWORK]
+
+    def test_sync_rejected_row_fails_without_blocking(self):
+        mock_request, port_row, network_row = (
+            self._sync_port_and_network_rows(requests.codes.bad_request))
+
+        self.assertEqual(2, mock_request.call_count)
+        self.assertEqual(sdn_const.FAILED, port_row.state)
+        self.assertEqual(0, port_row.retry_count)
+        self.assertEqual(sdn_const.MONITORING, network_row.state)
+
+    def test_sync_unavailable_row_is_retried(self):
+        mock_request, port_row, network_row = (
+            self._sync_port_and_network_rows(
+                requests.codes.service_unavailable))
+
+        self.assertEqual(1, mock_request.call_count)
+        self.assertEqual(sdn_const.PENDING, port_row.state)
+        self.assertEqual(1, port_row.retry_count)
+        self.assertEqual(sdn_const.PENDING, network_row.state)
+
+    def test_sync_rejected_delete_is_retried(self):
+        # UFM rejects deleting a network while hosts are associated with it,
+        # which can change, so the deletion must be retried.
+        self._call_operation_object(sdn_const.DELETE, sdn_const.NETWORK)
+        response = self._response(
+            requests.codes.bad_request,
+            'Network ID cannot be removed because it is associated to one '
+            'or more hosts')
+        with mock.patch('requests.request', return_value=response):
+            self.thread._sync_pending_rows(self.context, False)
+
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.PENDING, row.state)
+        self.assertEqual(1, row.retry_count)
+
+    def test_cleanup_deletes_old_failed_rows(self):
+        self._call_operation_object(sdn_const.POST, sdn_const.NETWORK)
+        row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_state(self.context, row, sdn_const.FAILED)
+        self._make_row_older(self.context, row)
+
+        cleanup.JournalCleanup().delete_completed_rows(self.context)
+
+        self.assertEqual([], db.get_all_db_rows(self.context))
+
     def test_network_filter_phynset(self):
         self.conf.set_override(
             'physical_networks', 'datacenter', sdn_const.GROUP_OPT)

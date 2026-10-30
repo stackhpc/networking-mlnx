@@ -179,6 +179,27 @@ class SdnJournalThread(object):
                     else:
                         LOG.warning("object %s has NULL job_id",
                                     row.object_uuid)
+            except sdn_exc.SDNRequestError as e:
+                log_args = {'operation': row.operation,
+                            'type': row.object_type,
+                            'uuid': row.object_uuid, 'error': e}
+                if row.operation == sdn_const.DELETE:
+                    # A rejected deletion can depend on the controller's
+                    # state. For example, UFM rejects deleting a network
+                    # while hosts are still associated with it. So retry it,
+                    # as for connection errors.
+                    LOG.error("SDN Controller rejected %(operation)s "
+                              "%(type)s %(uuid)s, retrying: %(error)s",
+                              log_args)
+                    db.update_pending_db_row_retry(context, row,
+                                                   self._row_retry_count)
+                    break
+                # The controller rejected the request as invalid. Sending it
+                # again would be rejected again, and would hold up the rows
+                # behind it.
+                LOG.error("SDN Controller rejected %(operation)s %(type)s "
+                          "%(uuid)s, not retrying: %(error)s", log_args)
+                db.update_db_row_state(context, row, sdn_const.FAILED)
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Log an error and raise the retry count. If the retry count
                 # exceeds the limit, move it to the failed state.
@@ -233,6 +254,10 @@ class SdnJournalThread(object):
                               {'job_id': row.job_id, 'status': job_status})
                     db.update_db_row_state(context, row, sdn_const.PENDING)
 
+            except sdn_exc.SDNRequestError as e:
+                LOG.error("Failed to get SDN Controller job %(job_id)s: "
+                          "%(error)s", {'job_id': row.job_id, 'error': e})
+                db.update_db_row_state(context, row, sdn_const.PENDING)
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Don't raise the retry count, just log an error
                 LOG.error("Cannot connect to the SDN Controller")

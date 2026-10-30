@@ -33,10 +33,12 @@ class JournalCleanup(object):
 
     def delete_completed_rows(self, context):
         if self._rows_retention != -1:
-            LOG.debug("Deleting completed rows")
-            db.delete_rows_by_state_and_time(
-                context, sdn_const.COMPLETED,
-                timedelta(seconds=self._rows_retention))
+            LOG.debug("Deleting completed and failed rows")
+            # Failed rows are never retried, so they are kept only for as
+            # long as completed ones.
+            for state in (sdn_const.COMPLETED, sdn_const.FAILED):
+                db.delete_rows_by_state_and_time(
+                    context, state, timedelta(seconds=self._rows_retention))
 
     def cleanup_processing_rows(self, context):
         row_count = db.reset_processing_rows(context, self._processing_timeout)

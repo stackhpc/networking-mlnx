@@ -21,6 +21,10 @@ class SDNConnectionError(exc.NeutronException):
     message = _("Failed to send request %(msg)s")
 
 
+class SDNRequestError(exc.NeutronException):
+    message = _("Request rejected by the SDN controller: %(msg)s")
+
+
 class SDNLoginError(exc.NeutronException):
     message = _("Failed login to URL: %(login_url)s %(msg)s")
 
