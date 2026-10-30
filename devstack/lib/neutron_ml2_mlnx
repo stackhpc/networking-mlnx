@@ -115,7 +115,7 @@ function start_neutron_ml2_mlnx {
         start_eswitchd
     fi
     if is_service_enabled mlnx-agt; then
-        run_process mlnx-agt "$MLNX_AGENT_BINARY --config-file ${NEUTRON_CONF} --config-file ${NEUTRON_CORE_PLUGIN_CONF}"
+        run_process mlnx-agt "$MLNX_AGENT_BINARY --config-file ${NEUTRON_CONF} --config-file /$Q_PLUGIN_CONF_FILE"
     fi
     sleep 10
 }
