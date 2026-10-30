@@ -16,6 +16,7 @@ Contents:
    usage
    devstack
    contributing
+   releasing
 
 Indices and tables
 ==================
