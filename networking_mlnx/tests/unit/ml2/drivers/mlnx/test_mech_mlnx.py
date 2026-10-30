@@ -150,8 +150,9 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
         self.conf = self.conf_fixture.conf
         self.conf.register_opts(config.mlnx_opts, "mlnx")
 
-    def _get_context(self):
+    def _get_context(self, segments=None, agents=None):
         VLAN_SEGMENTS = [{api.ID: 'vlan_segment_id',
+                          'network_id': 'fake_network_id',
                           api.NETWORK_TYPE: 'vlan',
                           api.PHYSICAL_NETWORK: 'fake_physical_network',
                           api.SEGMENTATION_ID: 1234}]
@@ -163,9 +164,9 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
                            'binding:vnic_type': portbindings.VNIC_DIRECT,
                            'device_owner': 'compute'}
         return FakeContext(self.AGENT_TYPE,
-                           self.AGENTS,
-                           VLAN_SEGMENTS,
-               portbindings.VNIC_DIRECT,
+                           self.AGENTS if agents is None else agents,
+                           VLAN_SEGMENTS if segments is None else segments,
+                           portbindings.VNIC_DIRECT,
                            original=original_context,
                            current=current_context)
 
@@ -232,3 +233,42 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
             {'mac_address': '01:23:45:67:89:ab'})[0]
         opts = self._unbind([dict(client_id_opt)])
         self.assertEqual([dict(client_id_opt, opt_value=None)], opts)
+
+    GENEVE_SEGMENT = {api.ID: 'geneve_segment_id',
+                      'network_id': 'fake_network_id',
+                      api.NETWORK_TYPE: 'geneve',
+                      api.PHYSICAL_NETWORK: None,
+                      api.SEGMENTATION_ID: 1234}
+
+    def _assert_no_client_id(self, _context):
+        with mock.patch('neutron_lib.plugins.directory.get_plugin') as gp:
+            self.driver.update_port_precommit(_context)
+        gp.return_value._update_extra_dhcp_opts_on_port.assert_not_called()
+        self.assertIsNone(_context.current.get('extra_dhcp_opts'))
+
+    def test_precommit_no_client_id_on_other_networks(self):
+        self._assert_no_client_id(
+            self._get_context(segments=[self.GENEVE_SEGMENT]))
+
+    def test_precommit_no_client_id_on_unmapped_physnet(self):
+        segments = [{api.ID: 'vlan_segment_id',
+                     'network_id': 'fake_network_id',
+                     api.NETWORK_TYPE: 'vlan',
+                     api.PHYSICAL_NETWORK: 'wrong_physical_network',
+                     api.SEGMENTATION_ID: 1234}]
+        self._assert_no_client_id(self._get_context(segments=segments))
+
+    def test_precommit_no_client_id_without_agent(self):
+        self._assert_no_client_id(self._get_context(agents=[]))
+
+    def test_precommit_no_client_id_with_dead_agent(self):
+        self._assert_no_client_id(
+            self._get_context(agents=self.AGENTS_DEAD))
+
+    def test_precommit_client_id_on_multi_segment_network(self):
+        _context = self._get_context()
+        _context.network.network_segments.insert(0, self.GENEVE_SEGMENT)
+        with mock.patch('neutron_lib.plugins.directory.get_plugin'):
+            self.driver.update_port_precommit(_context)
+        self.assertEqual(self.driver._gen_client_id_opt(_context.current),
+                         _context.current['extra_dhcp_opts'])

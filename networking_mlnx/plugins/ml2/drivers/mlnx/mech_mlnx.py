@@ -98,6 +98,16 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             updated_extra_dhcp_opts.append(opt)
         return updated_extra_dhcp_opts
 
+    def _can_bind_network(self, context):
+        # update_port_precommit is called for every port, so check that a
+        # live Mellanox agent on the port's host can bind one of its
+        # network's segments.
+        agents = [agent for agent in context.host_agents(self.agent_type)
+                  if agent['alive']]
+        return any(self.check_segment_for_agent(segment, agent)
+                   for segment in context.network.network_segments
+                   for agent in agents)
+
     def _process_port_info(self, context):
         original_port = context.original
         updated_port = context.current
@@ -114,8 +124,11 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 context._plugin_context,
                 updated_port["id"],
                 {port.RESOURCE_NAME: updated_port})
+        # Normal ports are included because the SDN mechanism driver can
+        # bind them to InfiniBand physical networks (bind_normal_ports).
         elif ("compute" in updated_port["device_owner"] and
-                updated_port["binding:vnic_type"] in ("direct", "normal")):
+                updated_port["binding:vnic_type"] in ("direct", "normal") and
+                self._can_bind_network(context)):
             client_id_opt = self._gen_client_id_opt(updated_port)
             if updated_port.get("extra_dhcp_opts") == client_id_opt:
                 return

@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    The ``mlnx_infiniband`` mechanism driver no longer adds the InfiniBand
+    ``client-id`` DHCP option to every instance port, including ports on
+    other networks bound by other mechanism drivers such as OVN. It now
+    adds it only when a live Mellanox agent on the port's host can bind
+    the port's network.
