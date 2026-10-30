@@ -28,6 +28,7 @@ from oslo_utils import uuidutils
 import requests
 
 from networking_mlnx.db import db
+from networking_mlnx.db import schema
 from networking_mlnx.journal import cleanup
 from networking_mlnx.journal import journal
 from networking_mlnx.plugins.ml2.drivers.sdn import client
@@ -125,6 +126,19 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
         self._set_config(url=None, token=None,
                          sync_enabled=False)
         plugin.Ml2Plugin()
+
+    @mock.patch.object(schema, 'check_journal_states',
+                       side_effect=schema.JournalSchemaError(
+                           reason='test'))
+    def test_journal_schema_error_raises_exception(self, check):
+        self.assertRaises(schema.JournalSchemaError, plugin.Ml2Plugin)
+        check.assert_called_once_with()
+
+    @mock.patch.object(schema, 'check_journal_states')
+    def test_journal_schema_not_checked_when_disabled(self, check):
+        self._set_config(sync_enabled=False)
+        plugin.Ml2Plugin()
+        check.assert_not_called()
 
     def test__check_physnet_confs_bind_normal_ports_false_any_physnet(self):
         self._set_config(physical_networks=['*'],

@@ -24,6 +24,7 @@ from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 from oslo_log import log
 
+from networking_mlnx.db import schema
 from networking_mlnx.journal import cleanup
 from networking_mlnx.journal import journal
 from networking_mlnx.journal import maintenance
@@ -84,6 +85,8 @@ class SDNMechanismDriver(api.MechanismDriver):
     def initialize(self):
         self.maintenance_worker = maintenance.MaintenanceWorker()
         if self._is_sdn_sync_enabled():
+            # Fail now rather than leave journal rows that never complete.
+            schema.check_journal_states()
             self.journal = journal.SdnJournalThread()
             self._start_maintenance_thread()
         self.supported_vnic_types = [portbindings.VNIC_BAREMETAL]
