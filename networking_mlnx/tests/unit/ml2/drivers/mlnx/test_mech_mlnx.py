@@ -296,3 +296,50 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
         self.conf.set_override('client_id_hardware', True, "mlnx")
         opts = self._unbind([dict(client_id_opt)])
         self.assertEqual([dict(client_id_opt, opt_value=None)], opts)
+
+    def _bind(self, extra_dhcp_opts):
+        _context = self._get_context()
+        _context.current['extra_dhcp_opts'] = extra_dhcp_opts
+        with mock.patch('neutron_lib.plugins.directory.get_plugin') as gp:
+            self.driver.update_port_precommit(_context)
+        return (_context.current['extra_dhcp_opts'],
+                gp.return_value._update_extra_dhcp_opts_on_port)
+
+    def test_precommit_bind_keeps_user_client_id(self):
+        user_opt = {'opt_name': 'client-id', 'opt_value': 'user-value',
+                    'ip_version': 4}
+        opts, update = self._bind([dict(user_opt)])
+        update.assert_not_called()
+        self.assertEqual([user_opt], opts)
+
+    def test_precommit_bind_keeps_other_opts(self):
+        self.conf.set_override('client_id_hardware', True, "mlnx")
+        tftp_opt = {'opt_name': 'tftp-server', 'opt_value': '192.0.2.1',
+                    'ip_version': 4}
+        opts, update = self._bind([dict(tftp_opt)])
+        update.assert_called_once()
+        self.assertEqual(
+            [tftp_opt, {'opt_name': 'client-id',
+                        'opt_value': self.expected_client_id_hardware,
+                        'ip_version': 4}],
+            opts)
+
+    def test_precommit_bind_updates_other_prefix_client_id(self):
+        self.conf.set_override('client_id_hardware', True, "mlnx")
+        legacy_opt = {'opt_name': 'client-id',
+                      'opt_value': self.expected_client_id_legacy,
+                      'ip_version': 4}
+        opts, update = self._bind([legacy_opt])
+        update.assert_called_once()
+        self.assertEqual([{'opt_name': 'client-id',
+                           'opt_value': self.expected_client_id_hardware,
+                           'ip_version': 4}], opts)
+
+    def test_precommit_bind_client_id_up_to_date(self):
+        self.conf.set_override('client_id_hardware', True, "mlnx")
+        opt = {'opt_name': 'client-id',
+               'opt_value': self.expected_client_id_hardware,
+               'ip_version': 4}
+        opts, update = self._bind([dict(opt)])
+        update.assert_not_called()
+        self.assertEqual([opt], opts)

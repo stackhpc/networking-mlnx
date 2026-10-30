@@ -139,10 +139,22 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         elif ("compute" in updated_port["device_owner"] and
                 updated_port["binding:vnic_type"] in ("direct", "normal") and
                 self._can_bind_network(context)):
-            client_id_opt = self._gen_client_id_opt(updated_port)
-            if updated_port.get("extra_dhcp_opts") == client_id_opt:
-                return
-            updated_port["extra_dhcp_opts"] = client_id_opt
+            client_id = self._gen_client_id(updated_port)
+            other_opts = []
+            for opt in updated_port.get("extra_dhcp_opts") or []:
+                if (opt["opt_name"] != edo_ext.DHCP_OPT_CLIENT_ID or
+                        opt.get("ip_version", 4) != 4):
+                    other_opts.append(opt)
+                # Keep a client-id set by the user, or one that is already
+                # up to date.
+                elif (opt["opt_value"] == client_id or
+                        not self._is_gen_client_id(updated_port,
+                                                   opt["opt_value"])):
+                    return
+            # Keep the port's other options, so that later drivers and the
+            # API response see them.
+            updated_port["extra_dhcp_opts"] = (
+                other_opts + self._gen_client_id_opt(updated_port))
             plugin._update_extra_dhcp_opts_on_port(
                 context._plugin_context,
                 updated_port["id"],
