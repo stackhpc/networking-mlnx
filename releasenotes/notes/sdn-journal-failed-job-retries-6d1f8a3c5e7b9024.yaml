@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    When a UFM job fails, the SDN journal now counts sending the request
+    again against ``[sdn] retry_count``, as it does for other failures, and
+    marks the row failed when the count is reached. Previously the request
+    was sent again indefinitely, whatever ``retry_count`` was set to.

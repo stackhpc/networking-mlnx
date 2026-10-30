@@ -243,12 +243,14 @@ class SdnJournalThread(object):
                                       {'job_id': row.job_id,
                                        'status': job_status})
                             continue
+                        # Send the request again, up to retry_count times,
+                        # as for other failures.
                         LOG.error("SDN Controller Job id %(job_id)s, "
                                   "failed with %(status)s",
                                   {'job_id': row.job_id,
                                   'status': job_status})
-                        db.update_db_row_state(
-                            context, row, sdn_const.PENDING)
+                        db.update_pending_db_row_retry(
+                            context, row, self._row_retry_count)
                     except (ValueError, AttributeError):
                         # Send the request again, up to retry_count times,
                         # rather than monitor a job that can't be read,

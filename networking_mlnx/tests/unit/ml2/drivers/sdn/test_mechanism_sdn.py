@@ -675,6 +675,10 @@ class SdnDriverTestCase(SdnConfigBase):
                 self._response(requests.codes.ok, text))
             self._db_cleanup()
 
+    def test_sync_progress_rows_job_failed(self):
+        self._test_sync_progress_row(
+            self._response(requests.codes.ok, '{"Status": "Failed"}'))
+
     def test_sync_progress_rows_job_not_implemented(self):
         self._test_sync_progress_row(
             self._response(requests.codes.not_implemented))
