@@ -159,6 +159,52 @@ and attach it after the first boot::
 
     openstack server add port ib-test ib-port
 
+Tempest tests
+-------------
+
+The `networking-mlnx-tempest-plugin`_ tests this setup automatically. To
+install it, clone it before running ``stack.sh``::
+
+    git clone https://github.com/stackhpc/networking-mlnx-tempest-plugin \
+        /opt/stack/networking-mlnx-tempest-plugin
+
+Then add it to ``TEMPEST_PLUGINS`` in ``local.conf``. This is a
+space-separated list, so append to it if you already install other plugins::
+
+    [[local|localrc]]
+    TEMPEST_PLUGINS=/opt/stack/networking-mlnx-tempest-plugin
+
+When ``tempest`` and ``mlnx-agt`` are enabled, the DevStack plugin sets
+``[service_available] networking_mlnx`` and ``[networking_mlnx]
+physical_network`` in ``tempest.conf``. It takes the physical network from the
+first entry of ``PHYSICAL_INTERFACE_MAPPINGS``, or from ``PHYSICAL_NETWORK``
+if only ``PHYSICAL_NETWORK`` and ``PHYSICAL_INTERFACE`` are set. If neither is
+set, it sets nothing and the tests are skipped. To change these or set the
+plugin's other options, add them to a ``[[test-config|$TEMPEST_CONFIG]]``
+section in ``local.conf``, which DevStack applies afterwards. Do this on
+multi-node setups where Tempest runs on a host without ``mlnx-agt``, because
+the DevStack plugin only sets the options on hosts that run it.
+
+Run the tests in DevStack's Tempest environment::
+
+    cd /opt/stack/tempest
+    tox -e venv-tempest -- tempest run --regex networking_mlnx_tempest_plugin
+
+The tests create their own flat network on the InfiniBand physical network,
+and Neutron allows only one. They also need two free VFs. So first delete the
+resources from the previous section::
+
+    openstack server delete --wait ib-test
+    openstack port delete ib-port
+    openstack network delete infiniband
+
+Alternatively, keep the network: share it with ``openstack network set
+--share infiniband``, and set ``network_id`` to its ID in the ``[networking_mlnx]``
+section of a ``[[test-config|$TEMPEST_CONFIG]]`` block. The server still has
+to be deleted to free its VF.
+
+.. _networking-mlnx-tempest-plugin: https://github.com/stackhpc/networking-mlnx-tempest-plugin
+
 SDN mechanism driver
 ====================
 
