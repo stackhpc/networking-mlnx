@@ -161,4 +161,7 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 {port.RESOURCE_NAME: updated_port})
 
     def update_port_precommit(self, context):
+        # The base class blocks the port from going ACTIVE until the agent
+        # reports that it has configured the VF.
+        super(MlnxMechanismDriver, self).update_port_precommit(context)
         self._process_port_info(context)

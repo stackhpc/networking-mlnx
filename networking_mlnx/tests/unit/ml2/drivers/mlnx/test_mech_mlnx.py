@@ -15,6 +15,7 @@
 
 import unittest.mock as mock
 
+from neutron.db import provisioning_blocks
 from neutron.tests.unit.plugins.ml2 import _test_mech_agent as base
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron_lib.api.definitions import portbindings
@@ -134,6 +135,20 @@ class FakeContext(base.FakePortContext):
     @original.setter
     def set_original(self, value):
         self._original = value
+
+
+class FakeBindingContext(FakeContext):
+    @property
+    def plugin_context(self):
+        return self._plugin_context
+
+    @property
+    def host(self):
+        return self.current['binding:host_id']
+
+    @property
+    def original_host(self):
+        return self.original['binding:host_id']
 
 
 class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
@@ -343,3 +358,30 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
         opts, update = self._bind([dict(opt)])
         update.assert_not_called()
         self.assertEqual([opt], opts)
+
+    def _get_binding_context(self, host='host1', original_host=None):
+        _context = self._get_context()
+        _context.current['binding:host_id'] = host
+        _context.current['status'] = 'DOWN'
+        _context.original['binding:host_id'] = original_host
+        return FakeBindingContext(self.AGENT_TYPE, self.AGENTS,
+                                  _context.network.network_segments,
+                                  portbindings.VNIC_DIRECT,
+                                  original=_context.original,
+                                  current=_context.current)
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_precommit_new_host_blocks_port(self, add_block):
+        _context = self._get_binding_context()
+        with mock.patch('neutron_lib.plugins.directory.get_plugin'):
+            self.driver.update_port_precommit(_context)
+        add_block.assert_called_once_with(
+            _context.plugin_context, _context.current['id'], mock.ANY,
+            provisioning_blocks.L2_AGENT_ENTITY)
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_precommit_same_host_does_not_block_port(self, add_block):
+        _context = self._get_binding_context(original_host='host1')
+        with mock.patch('neutron_lib.plugins.directory.get_plugin'):
+            self.driver.update_port_precommit(_context)
+        add_block.assert_not_called()
