@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
+
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 import six
@@ -35,6 +37,10 @@ class EswitchUtils(object):
         self.__conn = None
         self.daemon = daemon_endpoint
         self.timeout = timeout
+        # The agent's main loop and its state report thread share this REQ
+        # socket, which must strictly alternate send and receive. The lock
+        # also covers replacing the socket after a failed request.
+        self._lock = threading.Lock()
 
     @property
     def _conn(self):
@@ -50,19 +56,28 @@ class EswitchUtils(object):
 
     @comm_utils.RetryDecorator(exceptions.RequestTimeout)
     def send_msg(self, msg):
-        self._conn.send_string(msg)
+        with self._lock:
+            try:
+                self._conn.send_string(msg)
 
-        socks = dict(self.poller.poll(self.timeout))
-        if socks.get(self._conn) == zmq.POLLIN:
-            recv_msg = self._conn.recv_string()
-            response = self.parse_response_msg(recv_msg)
-            return response
-        else:
-            self._conn.setsockopt(zmq.LINGER, 0)
-            self._conn.close()
-            self.poller.unregister(self._conn)
-            self.__conn = None
-            raise exceptions.RequestTimeout()
+                socks = dict(self.poller.poll(self.timeout))
+                if socks.get(self._conn) != zmq.POLLIN:
+                    raise exceptions.RequestTimeout()
+                recv_msg = self._conn.recv_string()
+            except BaseException:
+                # A REQ socket that sent a request but did not receive the
+                # reply rejects any further requests, so replace it.
+                self._reset_conn()
+                raise
+        return self.parse_response_msg(recv_msg)
+
+    def _reset_conn(self):
+        if self.__conn is None:
+            return
+        self.__conn.setsockopt(zmq.LINGER, 0)
+        self.__conn.close()
+        self.poller.unregister(self.__conn)
+        self.__conn = None
 
     def parse_response_msg(self, recv_msg):
         msg = jsonutils.loads(recv_msg)

@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    Fixed a race in ``neutron-mlnx-agent`` where its state report thread and
+    its main loop could send requests to ``eswitchd`` on the same ZeroMQ
+    socket at the same time. The main loop then stopped with ``ZMQError:
+    Operation cannot be accomplished in current state`` while the agent was
+    still reported as alive, so ports were never bound and instances with
+    InfiniBand ports failed to boot with a VIF plugging timeout. Requests are
+    now serialised, and the socket is replaced after a failed request.
