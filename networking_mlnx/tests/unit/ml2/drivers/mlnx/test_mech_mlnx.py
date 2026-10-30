@@ -226,3 +226,9 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
         opts = self._unbind([client_id_opt, dict(tftp_opt)])
         self.assertEqual([dict(client_id_opt, opt_value=None), tftp_opt],
                          opts)
+
+    def test_precommit_unbind_removes_client_id(self):
+        client_id_opt = self.driver._gen_client_id_opt(
+            {'mac_address': '01:23:45:67:89:ab'})[0]
+        opts = self._unbind([dict(client_id_opt)])
+        self.assertEqual([dict(client_id_opt, opt_value=None)], opts)

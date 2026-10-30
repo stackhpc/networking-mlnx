@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    The ``mlnx_infiniband`` mechanism driver now removes the ``client-id``
+    DHCP option from a port when it is unbound, for example when its
+    instance is deleted. Previously the option was left on the port.

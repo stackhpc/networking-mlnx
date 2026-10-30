@@ -107,10 +107,6 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         if original_host_id == current_host_id or current_host_id is None:
             return
         plugin = directory.get_plugin()
-        if updated_port.get("extra_dhcp_opts"):
-            if updated_port["extra_dhcp_opts"] == \
-                    self._gen_client_id_opt(updated_port):
-                return
         if not updated_port["device_owner"]:
             updated_port["extra_dhcp_opts"] = \
                     self._gen_none_client_id_opt(updated_port)
@@ -120,8 +116,10 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
                 {port.RESOURCE_NAME: updated_port})
         elif ("compute" in updated_port["device_owner"] and
                 updated_port["binding:vnic_type"] in ("direct", "normal")):
-            updated_port["extra_dhcp_opts"] = \
-                    self._gen_client_id_opt(updated_port)
+            client_id_opt = self._gen_client_id_opt(updated_port)
+            if updated_port.get("extra_dhcp_opts") == client_id_opt:
+                return
+            updated_port["extra_dhcp_opts"] = client_id_opt
             plugin._update_extra_dhcp_opts_on_port(
                 context._plugin_context,
                 updated_port["id"],
