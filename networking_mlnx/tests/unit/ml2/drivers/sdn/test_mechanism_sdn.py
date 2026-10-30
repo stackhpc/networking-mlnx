@@ -17,6 +17,7 @@ import unittest.mock as mock
 from neutron.plugins.ml2 import plugin
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron.tests.unit import testlib_api
+from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants
 from neutron_lib import context as nl_context
 from neutron_lib.db import api as db_api
@@ -39,6 +40,7 @@ from networking_mlnx.plugins.ml2.drivers.sdn import utils as sdn_utils
 PLUGIN_NAME = 'neutron.plugins.ml2.plugin.Ml2Plugin'
 SEG_ID = 4
 DEVICE_OWNER_COMPUTE = 'compute:None'
+CLIENT_ID = 'ff:00:00:00:00:00:02:00:00:02:c9:00:b8:3f:d2:03:00:7b:74:9a'
 MECHANISM_DRIVER_NAME = 'mlnx_sdn_assist'
 
 
@@ -616,6 +618,36 @@ class SdnDriverTestCase(SdnConfigBase):
         # first row should be set back to 'pending' because it was not valid
         rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
         self.assertEqual(3, len(rows))
+
+    def test__get_client_id_from_port(self):
+        for opt_name in ('client-id', '61', 61):
+            port = {'extra_dhcp_opts': [
+                {'opt_name': 'tftp-server', 'opt_value': '10.0.0.1'},
+                {'opt_name': opt_name, 'opt_value': CLIENT_ID}]}
+            self.assertEqual(CLIENT_ID,
+                             self.mech._get_client_id_from_port(port))
+        self.assertIsNone(self.mech._get_client_id_from_port(
+            {'extra_dhcp_opts': [{'opt_name': '60', 'opt_value': 'x'}]}))
+        self.assertIsNone(self.mech._get_client_id_from_port({}))
+
+    def test_create_baremetal_port_with_numeric_client_id(self):
+        # Ironic sets the client ID option by number, which Neutron returns
+        # as the string '61'.
+        context = self._get_mock_port_operation_context()
+        context.current.update({
+            'binding:vnic_type': portbindings.VNIC_BAREMETAL,
+            'binding:profile': {},
+            'extra_dhcp_opts': [{'opt_name': '61', 'opt_value': CLIENT_ID,
+                                 'ip_version': 4}]})
+
+        self.mech.create_port_precommit(context)
+
+        row = db.get_oldest_pending_db_row_with_lock(self.context)
+        self.assertEqual(sdn_const.POST, row['operation'])
+        self.assertEqual(sdn_const.PORT, row['object_type'])
+        opts = jsonutils.loads(row['data'])['extra_dhcp_opts']
+        self.assertEqual([{'opt_name': 'client-id', 'opt_value': CLIENT_ID,
+                           'ip_version': 4}], opts)
 
     def test_network_filter_phynset(self):
         self.conf.set_override(

@@ -213,8 +213,11 @@ class SDNMechanismDriver(api.MechanismDriver):
         dhcp_opts = port.get('extra_dhcp_opts', [])
         for dhcp_opt in dhcp_opts:
             if isinstance(dhcp_opt, dict):
-                if dhcp_opt.get('opt_name') in (edo_ext.DHCP_OPT_CLIENT_ID,
-                        edo_ext.DHCP_OPT_CLIENT_ID_NUM):
+                # Neutron stores option names as strings, so the client ID
+                # option set by its number (as Ironic does) is '61'.
+                if str(dhcp_opt.get('opt_name')) in (
+                        edo_ext.DHCP_OPT_CLIENT_ID,
+                        str(edo_ext.DHCP_OPT_CLIENT_ID_NUM)):
                     return dhcp_opt.get('opt_value')
 
     @staticmethod

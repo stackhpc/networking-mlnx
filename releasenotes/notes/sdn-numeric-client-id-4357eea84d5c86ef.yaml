@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    The ``mlnx_sdn_assist`` mechanism driver now recognises a port's DHCP
+    client ID when the option is set by its number, ``61``, as Ironic does.
+    Neutron stores option names as strings and the driver only matched the
+    integer, so it never found the client ID of such bare metal InfiniBand
+    ports and did not send them to UFM unless they had local link
+    information.
