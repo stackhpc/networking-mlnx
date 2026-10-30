@@ -193,3 +193,36 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
         with mock.patch('neutron_lib.plugins.directory.get_plugin'):
             self.driver.update_port_precommit(_context)
         self.assertIsNotNone(_context.current.get('extra_dhcp_opts'))
+
+    def _get_unbind_context(self, extra_dhcp_opts):
+        original_context = {'id': uuidutils.generate_uuid(),
+                            'binding:host_id': 'host1'}
+        current_context = {'id': uuidutils.generate_uuid(),
+                           'binding:host_id': '',
+                           'mac_address': '01:23:45:67:89:ab',
+                           'binding:vnic_type': portbindings.VNIC_DIRECT,
+                           'device_owner': '',
+                           'extra_dhcp_opts': extra_dhcp_opts}
+        return FakeContext(self.AGENT_TYPE,
+                           self.AGENTS,
+                           [],
+                           portbindings.VNIC_DIRECT,
+                           original=original_context,
+                           current=current_context)
+
+    def _unbind(self, extra_dhcp_opts):
+        _context = self._get_unbind_context(extra_dhcp_opts)
+        with mock.patch('neutron_lib.plugins.directory.get_plugin') as gp:
+            self.driver.update_port_precommit(_context)
+        update = gp.return_value._update_extra_dhcp_opts_on_port
+        update.assert_called_once()
+        return update.call_args[0][2]['port']['extra_dhcp_opts']
+
+    def test_precommit_unbind_keeps_other_opts(self):
+        client_id_opt = self.driver._gen_client_id_opt(
+            {'mac_address': '01:23:45:67:89:ab'})[0]
+        tftp_opt = {'opt_name': 'tftp-server', 'opt_value': '192.0.2.1',
+                    'ip_version': 4}
+        opts = self._unbind([client_id_opt, dict(tftp_opt)])
+        self.assertEqual([dict(client_id_opt, opt_value=None), tftp_opt],
+                         opts)

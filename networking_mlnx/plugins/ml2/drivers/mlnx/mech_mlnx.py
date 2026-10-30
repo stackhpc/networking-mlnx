@@ -92,7 +92,9 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     def _gen_none_client_id_opt(self, port):
         updated_extra_dhcp_opts = []
         for opt in port["extra_dhcp_opts"]:
-            opt["opt_value"] = None
+            # Keep any other options set by the user.
+            if opt["opt_name"] == edo_ext.DHCP_OPT_CLIENT_ID:
+                opt["opt_value"] = None
             updated_extra_dhcp_opts.append(opt)
         return updated_extra_dhcp_opts
 
