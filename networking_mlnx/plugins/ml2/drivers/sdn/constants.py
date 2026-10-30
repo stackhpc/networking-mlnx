@@ -36,5 +36,9 @@ MONITORING = 'monitoring'
 FAILED = 'failed'
 COMPLETED = 'completed'
 
+# Provisioning block entity that holds a port DOWN until the SDN controller
+# has added it to its network's partition key
+PROVISIONING_ENTITY = 'mlnx_sdn'
+
 # Constants for physical_networks option
 ANY = '*'

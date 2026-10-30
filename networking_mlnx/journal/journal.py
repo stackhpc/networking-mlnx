@@ -16,7 +16,14 @@
 import re
 import threading
 
+from neutron.db import provisioning_blocks
+from neutron.plugins.ml2 import db as ml2_db
+from neutron_lib.api.definitions import portbindings
+from neutron_lib.callbacks import resources
+from neutron_lib import constants as n_const
 from neutron_lib import context as nl_context
+from neutron_lib.db import api as db_api
+from neutron_lib.plugins import directory
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
@@ -48,6 +55,66 @@ def call_thread_on_end(func):
 def record(context, object_type, object_uuid, operation, data):
     db.create_pending_row(context, object_type, object_uuid, operation,
                           data)
+
+
+def _get_blocked_port_id(context, row):
+    """Return the ID of the port that the row holds DOWN, or None
+
+    The SDN mechanism driver holds an instance's port DOWN with a
+    provisioning block until its POST row has added the port to the
+    partition key. Only the latest POST for the port's current binding
+    holds the port: a row for an earlier binding must neither release nor
+    fail it.
+    """
+    if (row.object_type != sdn_const.PORT or
+            row.operation != sdn_const.POST):
+        return None
+    port_id = row.object_uuid
+    host = jsonutils.loads(row.data).get(portbindings.HOST_ID)
+    if (not host or
+            not db.port_has_provisioning_block(
+                context, port_id, sdn_const.PROVISIONING_ENTITY) or
+            ml2_db.get_port_binding_host(context, port_id) != host or
+            db.check_for_newer_ops(context, row, sdn_const.POST)):
+        return None
+    return port_id
+
+
+def _complete_port_provisioning(context, row):
+    try:
+        with db_api.CONTEXT_WRITER.using(context):
+            port_id = _get_blocked_port_id(context, row)
+            if not port_id:
+                return
+            provisioning_blocks.remove_provisioning_component(
+                context, port_id, resources.PORT,
+                sdn_const.PROVISIONING_ENTITY)
+        LOG.info("SDN Controller added port %s to its partition key",
+                 port_id)
+        # Nothing is left to remove, but this makes the port ACTIVE if no
+        # other provisioning blocks remain.
+        provisioning_blocks.provisioning_complete(
+            context, port_id, resources.PORT, sdn_const.PROVISIONING_ENTITY)
+    except Exception:
+        # The port stays DOWN, so Nova fails the boot when it times out.
+        LOG.exception("Failed to complete provisioning of port %s",
+                      row.object_uuid)
+
+
+def _fail_port_provisioning(context, row):
+    try:
+        port_id = _get_blocked_port_id(context, row)
+        if not port_id:
+            return
+        # Keep the provisioning block, so that the port can't become ACTIVE
+        # when the agent reports it up.
+        LOG.error("SDN Controller failed to add port %s to its partition "
+                  "key, setting the port to ERROR", port_id)
+        directory.get_plugin().update_port_status(
+            context, port_id, n_const.PORT_STATUS_ERROR)
+    except Exception:
+        # The port stays DOWN, so Nova fails the boot when it times out.
+        LOG.exception("Failed to set port %s to ERROR", row.object_uuid)
 
 
 class SdnJournalThread(object):
@@ -174,7 +241,17 @@ class SdnJournalThread(object):
                     client_operation_method(
                         urlpath, jsonutils.loads(row.data)))
                 if response.status_code == requests.codes.not_implemented:
-                    db.update_db_row_state(context, row, sdn_const.COMPLETED)
+                    if _get_blocked_port_id(context, row):
+                        # The port has not been added to its partition key.
+                        LOG.error("SDN Controller does not implement "
+                                  "%(operation)s %(type)s %(uuid)s",
+                                  {'operation': row.operation,
+                                   'type': row.object_type,
+                                   'uuid': row.object_uuid})
+                        self._fail_row(context, row)
+                    else:
+                        db.update_db_row_state(
+                            context, row, sdn_const.COMPLETED)
                 elif (response.status_code == requests.codes.not_found and
                       row.operation == sdn_const.DELETE):
                     db.update_db_row_state(context, row, sdn_const.COMPLETED)
@@ -207,6 +284,10 @@ class SdnJournalThread(object):
                     else:
                         LOG.warning("object %s has NULL job_id",
                                     row.object_uuid)
+                        # Without a job, there is no way to tell when the
+                        # port has been added to its partition key.
+                        if _get_blocked_port_id(context, row):
+                            self._fail_row(context, row)
             except sdn_exc.SDNRequestError as e:
                 log_args = {'operation': row.operation,
                             'type': row.object_type,
@@ -219,24 +300,32 @@ class SdnJournalThread(object):
                     LOG.error("SDN Controller rejected %(operation)s "
                               "%(type)s %(uuid)s, retrying: %(error)s",
                               log_args)
-                    db.update_pending_db_row_retry(context, row,
-                                                   self._row_retry_count)
+                    self._retry_row(context, row)
                     break
                 # The controller rejected the request as invalid. Sending it
                 # again would be rejected again, and would hold up the rows
                 # behind it.
                 LOG.error("SDN Controller rejected %(operation)s %(type)s "
                           "%(uuid)s, not retrying: %(error)s", log_args)
-                db.update_db_row_state(context, row, sdn_const.FAILED)
+                self._fail_row(context, row)
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Log an error and raise the retry count. If the retry count
                 # exceeds the limit, move it to the failed state.
                 LOG.error("Cannot connect to the SDN Controller")
-                db.update_pending_db_row_retry(context, row,
-                                               self._row_retry_count)
+                self._retry_row(context, row)
                 # Break out of the loop and retry with the next
                 # timer interval
                 break
+
+    def _retry_row(self, context, row):
+        db.update_pending_db_row_retry(context, row, self._row_retry_count)
+        if row.state == sdn_const.FAILED:
+            _fail_port_provisioning(context, row)
+
+    @staticmethod
+    def _fail_row(context, row):
+        db.update_db_row_state(context, row, sdn_const.FAILED)
+        _fail_port_provisioning(context, row)
 
     def _sync_progress_rows(self, context):
         # 1. get all progressed job
@@ -260,6 +349,7 @@ class SdnJournalThread(object):
                         if job_status == 'Completed':
                             db.update_db_row_state(
                                 context, row, sdn_const.COMPLETED)
+                            _complete_port_provisioning(context, row)
                             continue
                         if job_status in ("Pending", "Running"):
                             LOG.debug("SDN Controller Job id %(job_id)s is "
@@ -273,29 +363,30 @@ class SdnJournalThread(object):
                                   "failed with %(status)s",
                                   {'job_id': row.job_id,
                                   'status': job_status})
-                        db.update_pending_db_row_retry(
-                            context, row, self._row_retry_count)
+                        if _get_blocked_port_id(context, row):
+                            # Fail the instance's boot rather than retry
+                            # while Nova waits.
+                            self._fail_row(context, row)
+                        else:
+                            self._retry_row(context, row)
                     except (ValueError, AttributeError):
                         # Send the request again, up to retry_count times,
                         # rather than monitor a job that can't be read,
                         # because other operations may be waiting for it.
                         LOG.error("failed to extract response for job "
                                   "id %s", row.job_id)
-                        db.update_pending_db_row_retry(
-                            context, row, self._row_retry_count)
+                        self._retry_row(context, row)
                 else:
                     LOG.error("SDN Controller Job id %(job_id)s, failed with "
                               "HTTP status %(status)s",
                               {'job_id': row.job_id,
                                'status': response.status_code})
-                    db.update_pending_db_row_retry(context, row,
-                                                   self._row_retry_count)
+                    self._retry_row(context, row)
 
             except sdn_exc.SDNRequestError as e:
                 LOG.error("Failed to get SDN Controller job %(job_id)s: "
                           "%(error)s", {'job_id': row.job_id, 'error': e})
-                db.update_pending_db_row_retry(context, row,
-                                               self._row_retry_count)
+                self._retry_row(context, row)
             except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
                 # Don't raise the retry count, just log an error
                 LOG.error("Cannot connect to the SDN Controller")

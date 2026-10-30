@@ -14,6 +14,8 @@
 #    under the License.
 import datetime
 
+from neutron.db.models import provisioning_block as pb_model
+from neutron.db import models_v2
 from neutron_lib.db import api as db_api
 from oslo_serialization import jsonutils
 from sqlalchemy import and_
@@ -67,6 +69,35 @@ def check_for_older_ops(context, row):
         sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
         sdn_journal_db.SdnJournal.created_at < row.created_at,
         sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def check_for_newer_ops(context, row, operation):
+    # created_at only has a resolution of a second, so a row created in the
+    # same second counts as newer. Callers use this to ignore stale rows, so
+    # erring this way can only make them ignore a row.
+    # Compare with the stored value rather than row.created_at, which the
+    # database may format differently when it is sent back as a parameter.
+    created_at = context.session.query(
+        sdn_journal_db.SdnJournal.created_at).filter(
+        sdn_journal_db.SdnJournal.id == row.id).scalar_subquery()
+    q = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
+        sdn_journal_db.SdnJournal.operation == operation,
+        sdn_journal_db.SdnJournal.created_at >= created_at,
+        sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def port_has_provisioning_block(context, port_id, entity):
+    q = context.session.query(pb_model.ProvisioningBlock).join(
+        models_v2.Port,
+        models_v2.Port.standard_attr_id ==
+        pb_model.ProvisioningBlock.standard_attr_id).filter(
+        models_v2.Port.id == port_id,
+        pb_model.ProvisioningBlock.entity == entity)
     return context.session.query(q.exists()).scalar()
 
 

@@ -15,9 +15,11 @@
 import functools
 
 
+from neutron.db import provisioning_blocks
 from neutron.objects.qos import policy as policy_object
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.callbacks import resources
 from neutron_lib import constants as neutron_const
 from neutron_lib import context as nl_context
 from neutron_lib.plugins.ml2 import api
@@ -28,6 +30,7 @@ from networking_mlnx.db import schema
 from networking_mlnx.journal import cleanup
 from networking_mlnx.journal import journal
 from networking_mlnx.journal import maintenance
+from networking_mlnx.plugins.ml2.drivers.mlnx import mech_mlnx
 from networking_mlnx.plugins.ml2.drivers.sdn import config
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 from networking_mlnx.plugins.ml2.drivers.sdn import exceptions as sdn_excpt
@@ -184,7 +187,10 @@ class SDNMechanismDriver(api.MechanismDriver):
         if not self._is_allowed_physical_networks(context.network):
             return
         port_dic = context.current
-        if self._is_send_bind_port(port_dic):
+        # Instances' direct ports are sent when the binding is committed
+        # instead, see update_port_precommit().
+        if (self._is_send_bind_port(port_dic) and
+                not self._is_direct_compute_port(port_dic)):
             port_dic[NETWORK_QOS_POLICY] = (
                 self._get_network_qos_policy(context, port_dic['network_id']))
             SDNMechanismDriver._record_in_journal(
@@ -260,6 +266,10 @@ class SDNMechanismDriver(api.MechanismDriver):
             self._get_network_qos_policy(context, port_dic['network_id']))
 
         vnic_type = port_dic[portbindings.VNIC_TYPE]
+        if (self._is_direct_compute_port(port_dic) and
+                self._is_binding_commit(context)):
+            self._send_bound_port(context)
+            return
         # Check if we get a client id after binding the bare metal port,
         # and report the port to sdn controller
         if vnic_type == portbindings.VNIC_BAREMETAL:
@@ -294,6 +304,7 @@ class SDNMechanismDriver(api.MechanismDriver):
               self._is_send_bind_port(orig_port_dict)):
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
+            self._remove_pkey_block(context)
         # delete the port in case instance is migrated to another hypervisor
         elif (orig_port_dict[portbindings.HOST_ID] and
               port_dic[portbindings.HOST_ID] !=
@@ -301,6 +312,7 @@ class SDNMechanismDriver(api.MechanismDriver):
               self._is_send_bind_port(orig_port_dict)):
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
+            self._remove_pkey_block(context)
         else:
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.PUT, port_dic)
@@ -366,6 +378,62 @@ class SDNMechanismDriver(api.MechanismDriver):
                 (device_owner.lower().startswith(
                  neutron_const.DEVICE_OWNER_COMPUTE_PREFIX) or
                  device_owner in self.supported_device_owners))
+
+    @staticmethod
+    def _is_direct_compute_port(port):
+        device_owner = port['device_owner'] or ''
+        return (port[portbindings.VNIC_TYPE] == portbindings.VNIC_DIRECT and
+                device_owner.lower().startswith(
+                    neutron_const.DEVICE_OWNER_COMPUTE_PREFIX))
+
+    @staticmethod
+    def _is_binding_commit(context):
+        """Check if ML2 is committing a new binding of the port
+
+        That is either a new binding of an unbound port, or the activation
+        of a binding on another host, which is how Nova live migrates.
+        """
+        unbound = (portbindings.VIF_TYPE_UNBOUND,
+                   portbindings.VIF_TYPE_BINDING_FAILED)
+        return (context.host and
+                context.vif_type not in unbound and
+                (context.original_vif_type in unbound or
+                 context.original_host != context.host))
+
+    def _send_bound_port(self, context):
+        """Send a newly bound port to the SDN controller
+
+        For an InfiniBand port on a VLAN segment, also keep the port DOWN
+        until the controller has added it to the partition key. The journal
+        then completes the provisioning block, or sets the port to ERROR if
+        the controller fails, so that Nova doesn't start an instance whose
+        port isn't isolated.
+
+        This runs in the transaction that commits the binding, so if it
+        fails, the binding fails too.
+        """
+        if context.original_host and context.original_host != context.host:
+            # A binding activated on another host replaces the old one.
+            SDNMechanismDriver._record_in_journal(
+                context, sdn_const.PORT, sdn_const.DELETE, context.original)
+        segment = context.bottom_bound_segment
+        if (not segment or
+                not self.check_segment(segment) or
+                not self._is_sdn_sync_enabled()):
+            return
+        SDNMechanismDriver._record_in_journal(
+            context, sdn_const.PORT, sdn_const.POST, context.current)
+        if (segment[api.NETWORK_TYPE] == neutron_const.TYPE_VLAN and
+                context.vif_type == mech_mlnx.VIF_TYPE_IB_HOSTDEV):
+            provisioning_blocks.add_provisioning_component(
+                context._plugin_context, context.current['id'],
+                resources.PORT, sdn_const.PROVISIONING_ENTITY)
+
+    @staticmethod
+    def _remove_pkey_block(context):
+        provisioning_blocks.remove_provisioning_component(
+            context._plugin_context, context.current['id'], resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
 
     def _is_port_binding_supported(self, port, segment):
         """Check if driver is able to bind the port

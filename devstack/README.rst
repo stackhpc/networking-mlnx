@@ -221,3 +221,30 @@ tested with a current DevStack::
     url = http://<sdn_provider_ip>/ufmRestV3
     domain = cloudx
     token = abcdef
+
+Partition keys of instance ports
+--------------------------------
+
+With ``mlnx_sdn_assist`` enabled, the SDN controller adds an instance's
+InfiniBand port (bound by ``mlnx_infiniband`` with VIF type ``ib_hostdev``) on
+a VLAN network to the network's partition key (pkey). Until the controller's
+job for the port has completed, the port stays ``DOWN``. If the controller
+rejects the port, or its job fails, the port is set to ``ERROR``. Either way
+Nova fails the boot, at the latest when ``vif_plugging_timeout`` expires, so
+an instance never runs with a port that is not in its partition key.
+
+This relies on Nova waiting for the port, which is its default. Check that
+``nova.conf`` on each compute node has::
+
+    [DEFAULT]
+    vif_plugging_is_fatal = True
+    vif_plugging_timeout = 300
+
+A port in ``ERROR`` stays held. To retry, unbind and rebind it, for example by
+detaching it from the instance and attaching it again.
+
+Nova doesn't wait for ports when it resizes, cold migrates, live migrates or
+resumes an instance, and Ironic bare metal ports are not held. For defence in
+depth, configure the subnet manager so that compute nodes have only limited
+membership of the default partition. A port that misses its partition key then
+can't reach other ports.
