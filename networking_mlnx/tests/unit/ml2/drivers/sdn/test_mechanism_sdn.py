@@ -606,7 +606,7 @@ class SdnDriverTestCase(SdnConfigBase):
 
     def _limit_row_fetches(self, limit=20):
         """Fail, rather than hang, if a sync run never ends."""
-        get_row = db.get_oldest_pending_db_row_with_lock
+        get_row = db.get_oldest_valid_pending_db_row_with_lock
         calls = []
 
         def get_row_with_limit(*args, **kwargs):
@@ -615,7 +615,8 @@ class SdnDriverTestCase(SdnConfigBase):
                 raise AssertionError('The sync run did not end')
             return get_row(*args, **kwargs)
 
-        return mock.patch.object(db, 'get_oldest_pending_db_row_with_lock',
+        return mock.patch.object(db,
+                                 'get_oldest_valid_pending_db_row_with_lock',
                                  side_effect=get_row_with_limit)
 
     @db_api.CONTEXT_WRITER
@@ -624,9 +625,8 @@ class SdnDriverTestCase(SdnConfigBase):
         context.session.merge(row)
 
     def test_sync_pending_rows_skips_waiting_row_with_same_time(self):
-        # A waiting row is put back with a new last_retried time, which can
-        # be equal to that of the other rows. A ready row must still be
-        # synced in the same run.
+        # A ready row with the same last_retried time as a waiting row must
+        # still be synced in the same run.
         self._call_operation_object(sdn_const.DELETE, sdn_const.PORT)
         port_row = db.get_all_db_rows(self.context)[0]
         db.update_db_row_state(self.context, port_row, sdn_const.MONITORING)
@@ -678,6 +678,27 @@ class SdnDriverTestCase(SdnConfigBase):
     def test_sync_progress_rows_job_not_implemented(self):
         self._test_sync_progress_row(
             self._response(requests.codes.not_implemented))
+
+    def test_sync_pending_rows_leaves_waiting_row_unchanged(self):
+        # A row that has to wait isn't written to, so that rows waiting for
+        # a long controller job don't add database writes on every sync.
+        self._call_operation_object(sdn_const.DELETE, sdn_const.PORT)
+        port_row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_state(self.context, port_row, sdn_const.MONITORING)
+        self._call_operation_object(sdn_const.DELETE, sdn_const.NETWORK)
+        network_row = db.get_all_db_rows_by_state(self.context,
+                                                  sdn_const.PENDING)[0]
+        last_retried = datetime.datetime(2020, 1, 1)
+        self._set_row_time(self.context, network_row, last_retried)
+
+        with self._limit_row_fetches(), \
+                mock.patch('requests.request') as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+
+        mock_request.assert_not_called()
+        row = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)[0]
+        self.assertEqual(network_row.id, row.id)
+        self.assertEqual(last_retried, row.last_retried)
 
     def test_sync_pending_rows_stops_when_all_rows_wait(self):
         # The network deletion waits for the port deletion, which the
@@ -760,7 +781,7 @@ class SdnDriverTestCase(SdnConfigBase):
                                      sdn_const.NETWORK, expected_calls=0)
 
         # validate that all the rows are in 'pending' state
-        # first row should be set back to 'pending' because it was not valid
+        # first row stays 'pending' because it was not valid
         rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
         self.assertEqual(3, len(rows))
 

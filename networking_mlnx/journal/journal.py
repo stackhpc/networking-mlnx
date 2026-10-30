@@ -116,23 +116,20 @@ class SdnJournalThread(object):
         skipped_row_ids = set()
         while True:
             LOG.debug("sync_pending_rows operation walking database")
-            row = db.get_oldest_pending_db_row_with_lock(
-                context, exclude_ids=skipped_row_ids)
+            row, valid = db.get_oldest_valid_pending_db_row_with_lock(
+                context, dependency_validations.validate,
+                exclude_ids=skipped_row_ids)
             if not row:
                 LOG.debug("No rows to sync")
                 break
 
-            # Validate the operation
-            valid = dependency_validations.validate(context, row)
             if not valid:
-                LOG.info("%(operation)s %(type)s %(uuid)s is not a "
-                         "valid operation yet, skipping for now",
+                # The row stays pending, unchanged.
+                LOG.info("%(operation)s %(type)s %(uuid)s has to wait, "
+                         "skipping for now",
                          {'operation': row.operation,
                           'type': row.object_type,
                           'uuid': row.object_uuid})
-                # Set row back to pending.
-                db.update_db_row_state(context, row, sdn_const.PENDING)
-
                 if exit_after_run:
                     break
                 skipped_row_ids.add(row.id)

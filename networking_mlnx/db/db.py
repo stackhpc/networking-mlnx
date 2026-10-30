@@ -105,6 +105,26 @@ def get_oldest_pending_db_row_with_lock(context, exclude_ids=()):
 
 
 @db_api.retry_if_session_inactive()
+@db_api.CONTEXT_WRITER
+def get_oldest_valid_pending_db_row_with_lock(context, validate,
+                                              exclude_ids=()):
+    """Lock the oldest pending row, and mark it processing if it's valid.
+
+    Returns the row, or None if there is no pending row, and the result of
+    validate(context, row). A row that has to wait for other operations is
+    left unchanged, so that it isn't rewritten on every sync. validate()
+    runs while the row is locked.
+    """
+    row = _get_row_with_lock(context.session, exclude_ids)
+    if not row:
+        return None, False
+    valid = validate(context, row)
+    if valid:
+        _update_db_row_state(context.session, row, sdn_const.PROCESSING)
+    return row, valid
+
+
+@db_api.retry_if_session_inactive()
 @db_api.CONTEXT_READER
 def get_all_monitoring_db_row_by_oldest(context):
     rows = context.session.query(sdn_journal_db.SdnJournal).filter_by(

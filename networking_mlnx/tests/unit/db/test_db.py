@@ -151,6 +151,39 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         self.assertEqual(older_row.id, row.id)
         self.assertEqual(row.state, sdn_const.PROCESSING)
 
+    def test_get_oldest_valid_pending_row_none_when_no_rows(self):
+        validate = mock.Mock()
+        row, valid = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, validate)
+        self.assertIsNone(row)
+        self.assertFalse(valid)
+        validate.assert_not_called()
+
+    def test_get_oldest_valid_pending_row_valid(self):
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        validate = mock.Mock(return_value=True)
+        row, valid = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, validate)
+        self.assertTrue(valid)
+        validate.assert_called_once_with(self.db_context, row)
+        row = db.get_all_db_rows(self.db_context)[0]
+        self.assertEqual(sdn_const.PROCESSING, row.state)
+
+    def test_get_oldest_valid_pending_row_invalid_unchanged(self):
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        old_row = db.get_all_db_rows(self.db_context)[0]
+        old_row.last_retried -= timedelta(minutes=1)
+        self._update_row(old_row)
+        old_row = db.get_all_db_rows(self.db_context)[0]
+
+        row, valid = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, mock.Mock(return_value=False))
+        self.assertFalse(valid)
+        self.assertEqual(old_row.id, row.id)
+        row = db.get_all_db_rows(self.db_context)[0]
+        self.assertEqual(sdn_const.PENDING, row.state)
+        self.assertEqual(old_row.last_retried, row.last_retried)
+
     def test_get_all_monitoring_db_row_by_oldest_order(self):
         db.create_pending_row(self.db_context, *self.UPDATE_ROW)
         db.create_pending_row(self.db_context, *self.UPDATE_ROW)
