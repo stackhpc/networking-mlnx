@@ -14,6 +14,7 @@ Contents:
    readme
    installation
    usage
+   devstack
    contributing
 
 Indices and tables
