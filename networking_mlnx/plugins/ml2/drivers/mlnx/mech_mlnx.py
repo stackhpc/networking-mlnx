@@ -14,18 +14,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from neutron.db import models_v2
 from neutron.plugins.ml2.drivers import mech_agent
+from neutron.plugins.ml2 import models as ml2_models
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import port
 from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as p_constants
+from neutron_lib.db import api as db_api
 from neutron_lib.plugins import directory
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
+from oslo_log import log as logging
 
 from networking_mlnx.plugins.ml2.drivers.mlnx import config
+from networking_mlnx.plugins.ml2.drivers.sdn import config as sdn_config
+from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 
+LOG = logging.getLogger(__name__)
 cfg.CONF.register_opts(config.mlnx_opts, "mlnx")
+cfg.CONF.register_opts(sdn_config.sdn_opts, sdn_const.GROUP_OPT)
+SDN_MECHANISM_DRIVER = 'mlnx_sdn_assist'
 
 AGENT_TYPE_MLNX = 'Mellanox plugin agent'
 VIF_TYPE_IB_HOSTDEV = 'ib_hostdev'
@@ -58,14 +67,68 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         return agent['configurations'].get('interface_mappings', {})
 
     def try_to_bind_segment_for_agent(self, context, segment, agent):
-        if self.check_segment_for_agent(segment, agent):
-            if (segment[api.NETWORK_TYPE] in
-                    (p_constants.TYPE_FLAT, p_constants.TYPE_VLAN)):
-                self.vif_details['physical_network'] = segment[
-                    'physical_network']
-            context.set_binding(segment[api.ID],
-                                self.vif_type,
-                                self.vif_details)
+        if not self.check_segment_for_agent(segment, agent):
+            return False
+        if not self._is_pkey_enforced(segment):
+            LOG.error("Not binding port %(port)s to segment %(segment)s: "
+                      "nothing adds ports on physical network %(physnet)s "
+                      "to their partition key. Enable the %(sdn)s mechanism "
+                      "driver for it, or set [mlnx] allow_unenforced_pkeys.",
+                      {'port': context.current['id'],
+                       'segment': segment[api.ID],
+                       'physnet': segment[api.PHYSICAL_NETWORK],
+                       'sdn': SDN_MECHANISM_DRIVER})
+            return False
+        other_port_id = self._get_port_with_same_guid(context)
+        if other_port_id:
+            LOG.error("Not binding port %(port)s: port %(other)s has the "
+                      "same MAC address, so its virtual function would have "
+                      "the same GUID, which would be in both ports' "
+                      "partition keys.",
+                      {'port': context.current['id'], 'other': other_port_id})
+            return False
+        if (segment[api.NETWORK_TYPE] in
+                (p_constants.TYPE_FLAT, p_constants.TYPE_VLAN)):
+            self.vif_details['physical_network'] = segment[
+                'physical_network']
+        context.set_binding(segment[api.ID],
+                            self.vif_type,
+                            self.vif_details)
+        return True
+
+    @staticmethod
+    def _is_pkey_enforced(segment):
+        """Check if something adds ports on the segment to its pkey
+
+        Ports on flat segments use the default partition key.
+        """
+        if segment[api.NETWORK_TYPE] != p_constants.TYPE_VLAN:
+            return True
+        if cfg.CONF.mlnx.allow_unenforced_pkeys:
+            return True
+        physnets = cfg.CONF.sdn.physical_networks
+        return (SDN_MECHANISM_DRIVER in cfg.CONF.ml2.mechanism_drivers and
+                cfg.CONF.sdn.sync_enabled and
+                (sdn_const.ANY in physnets or
+                 segment[api.PHYSICAL_NETWORK] in physnets))
+
+    @staticmethod
+    def _get_port_with_same_guid(context):
+        """Return the ID of another bound port with the same MAC address
+
+        A virtual function's GUID is derived from its port's MAC address,
+        which is only unique within a network.
+        """
+        port = context.current
+        plugin_context = context.plugin_context
+        with db_api.CONTEXT_READER.using(plugin_context):
+            other = plugin_context.session.query(models_v2.Port.id).join(
+                ml2_models.PortBinding,
+                ml2_models.PortBinding.port_id == models_v2.Port.id).filter(
+                models_v2.Port.mac_address == port['mac_address'],
+                models_v2.Port.id != port['id'],
+                ml2_models.PortBinding.vif_type == VIF_TYPE_IB_HOSTDEV).first()
+        return other and other.id
 
     def _gen_client_id(self, port):
         if cfg.CONF.mlnx.client_id_hardware:

@@ -16,10 +16,13 @@
 import unittest.mock as mock
 
 from neutron.db import provisioning_blocks
+from neutron.plugins.ml2 import models as ml2_models
 from neutron.tests.unit.plugins.ml2 import _test_mech_agent as base
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron_lib.api.definitions import portbindings
+from neutron_lib import constants
 from neutron_lib import context
+from neutron_lib.db import api as db_api
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 from oslo_config import fixture as fixture_config
@@ -63,6 +66,14 @@ class MlnxMechanismBaseTestCase(base.AgentMechanismBaseTestCase):
 
     def setUp(self):
         super(MlnxMechanismBaseTestCase, self).setUp()
+        # The generic binding tests use VLAN segments without an SDN
+        # controller, and port contexts without a database.
+        cfg.CONF.set_override('allow_unenforced_pkeys', True, 'mlnx')
+        self.addCleanup(cfg.CONF.clear_override, 'allow_unenforced_pkeys',
+                        'mlnx')
+        mock.patch.object(mech_mlnx.MlnxMechanismDriver,
+                          '_get_port_with_same_guid',
+                          return_value=None).start()
         self.driver = mech_mlnx.MlnxMechanismDriver()
         self.driver.initialize()
 
@@ -385,3 +396,100 @@ class MlnxMechanismIbPortTestCase(MlnxMechanismBaseTestCase,
         with mock.patch('neutron_lib.plugins.directory.get_plugin'):
             self.driver.update_port_precommit(_context)
         add_block.assert_not_called()
+
+
+class MlnxMechanismPkeyTestCase(MlnxMechanismBaseTestCase):
+
+    def setUp(self):
+        super(MlnxMechanismPkeyTestCase, self).setUp()
+        cfg.CONF.set_override('allow_unenforced_pkeys', False, 'mlnx')
+        cfg.CONF.set_override('mechanism_drivers',
+                              ['mlnx_infiniband'], 'ml2')
+        self.addCleanup(cfg.CONF.clear_override, 'mechanism_drivers', 'ml2')
+
+    def _bind(self, network_type=constants.TYPE_VLAN):
+        segment = {api.ID: 'segment_id',
+                   api.NETWORK_TYPE: network_type,
+                   api.PHYSICAL_NETWORK: 'fake_physical_network',
+                   api.SEGMENTATION_ID: 1234}
+        context = base.FakePortContext(self.AGENT_TYPE, self.AGENTS,
+                                       [segment], portbindings.VNIC_DIRECT)
+        return (self.driver.try_to_bind_segment_for_agent(
+            context, segment, self.AGENTS[0]), context)
+
+    def _enable_sdn(self, physical_networks='*'):
+        cfg.CONF.set_override('mechanism_drivers',
+                              ['mlnx_sdn_assist', 'mlnx_infiniband'], 'ml2')
+        cfg.CONF.set_override('physical_networks', physical_networks, 'sdn')
+        self.addCleanup(cfg.CONF.clear_override, 'physical_networks', 'sdn')
+
+    def test_vlan_without_sdn_is_not_bound(self):
+        bound, context = self._bind()
+        self.assertFalse(bound)
+        self.assertIsNone(context._bound_segment_id)
+
+    def test_vlan_with_sdn_is_bound(self):
+        self._enable_sdn()
+        bound, context = self._bind()
+        self.assertTrue(bound)
+        self.assertEqual('segment_id', context._bound_segment_id)
+
+    def test_vlan_with_sdn_for_other_physnet_is_not_bound(self):
+        self._enable_sdn(physical_networks=['other_physical_network'])
+        self.assertFalse(self._bind()[0])
+
+    def test_vlan_with_sdn_sync_disabled_is_not_bound(self):
+        self._enable_sdn()
+        cfg.CONF.set_override('sync_enabled', False, 'sdn')
+        self.addCleanup(cfg.CONF.clear_override, 'sync_enabled', 'sdn')
+        self.assertFalse(self._bind()[0])
+
+    def test_vlan_with_unenforced_pkeys_allowed_is_bound(self):
+        cfg.CONF.set_override('allow_unenforced_pkeys', True, 'mlnx')
+        self.assertTrue(self._bind()[0])
+
+    def test_flat_without_sdn_is_bound(self):
+        self.assertTrue(self._bind(constants.TYPE_FLAT)[0])
+
+    def test_port_with_same_guid_is_not_bound(self):
+        self._enable_sdn()
+        with mock.patch.object(mech_mlnx.MlnxMechanismDriver,
+                               '_get_port_with_same_guid',
+                               return_value='other-port-id'):
+            bound, context = self._bind()
+        self.assertFalse(bound)
+        self.assertIsNone(context._bound_segment_id)
+
+
+class MlnxMechanismSameGuidTestCase(test_plugin.Ml2PluginV2TestCase):
+
+    def _make_bound_port(self, network, mac, vif_type):
+        port = self._make_port(self.fmt, network['network']['id'],
+                               mac_address=mac)['port']
+        with db_api.CONTEXT_WRITER.using(self.context):
+            binding = self.context.session.query(
+                ml2_models.PortBinding).filter_by(port_id=port['id']).one()
+            binding.vif_type = vif_type
+            binding.host = 'host'
+        return port
+
+    def test_get_port_with_same_guid(self):
+        self.context = context.get_admin_context()
+        mac = 'fa:16:3e:00:00:01'
+        with self.network() as net1, self.network() as net2, \
+                self.network() as net3:
+            port1 = self._make_bound_port(net1, mac,
+                                          mech_mlnx.VIF_TYPE_IB_HOSTDEV)
+            port2 = self._make_bound_port(net2, mac, 'unbound')
+            port3 = self._make_bound_port(net3, 'fa:16:3e:00:00:02',
+                                          mech_mlnx.VIF_TYPE_IB_HOSTDEV)
+
+            def other(port):
+                port_context = mock.Mock(current=port,
+                                         plugin_context=self.context)
+                return mech_mlnx.MlnxMechanismDriver._get_port_with_same_guid(
+                    port_context)
+
+            self.assertEqual(port1['id'], other(port2))
+            self.assertIsNone(other(port1))
+            self.assertIsNone(other(port3))
