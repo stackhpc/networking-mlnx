@@ -262,6 +262,12 @@ class IbUtils(object):
             LOG.error("Unsupported vf device type: %s ", vf_device_type)
 
     def _config_vlan_ib_mlnx4(self, pf_mlx_dev, vf_pci_slot, hca_port, vlan):
+        if vlan == constants.UNTAGGED_VLAN_ID:
+            # The port is released: leave the VF in no partition.
+            self._config_vf_pkey(
+                IbUtils.INVALID_PKEY, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
+                vf_pci_slot, hca_port)
+            return
         pkey = IbUtils.DEFAULT_PKEY if vlan == 0 else vlan
         ppkey_idx = self._get_pkey_idx(pkey, pf_mlx_dev, hca_port)
         if ppkey_idx is None:

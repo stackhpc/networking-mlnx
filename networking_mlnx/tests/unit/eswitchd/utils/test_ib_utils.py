@@ -90,3 +90,14 @@ class TestIbUtils(base.TestCase):
         config_vf_pkey.assert_called_once_with(
             ib_utils.IbUtils.INVALID_PKEY, ib_utils.IbUtils.DEFAULT_PKEY_IDX,
             'mlx4_0', '0000:06:00.2', 1)
+
+    @mock.patch.object(ib_utils.IbUtils, '_config_vf_pkey')
+    @mock.patch.object(ib_utils.IbUtils, '_get_pkey_idx')
+    def test__config_vlan_ib_mlnx4_release(self, get_pkey_idx,
+                                          config_vf_pkey):
+        self.ib_utils._config_vlan_ib_mlnx4(
+            'mlx4_0', '0000:06:00.2', 1, ib_utils.constants.UNTAGGED_VLAN_ID)
+        get_pkey_idx.assert_not_called()
+        config_vf_pkey.assert_called_once_with(
+            ib_utils.IbUtils.INVALID_PKEY, ib_utils.IbUtils.DEFAULT_PKEY_IDX,
+            'mlx4_0', '0000:06:00.2', 1)
