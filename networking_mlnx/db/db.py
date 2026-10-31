@@ -55,14 +55,87 @@ def check_for_pending_delete_ops_with_parent(context, object_type, parent_id):
     return False
 
 
+def _get_created_at(context, row):
+    # Compare with the stored value rather than row.created_at, which the
+    # database may format differently when it is sent back as a parameter.
+    # SQLite stores it without fractional seconds, but compares it as text
+    # with a parameter that has them.
+    return context.session.query(
+        sdn_journal_db.SdnJournal.created_at).filter(
+        sdn_journal_db.SdnJournal.id == row.id).scalar_subquery()
+
+
+# The rows of an object are ordered by seqnum. Rows recorded before seqnum
+# was added have none, so they come before any row that has one, and are
+# ordered among themselves by created_at, which only has a resolution of a
+# second.
+
+def _is_older(context, row, same_second_is_older):
+    journal = sdn_journal_db.SdnJournal
+    if row.seqnum is not None:
+        return or_(journal.seqnum.is_(None), journal.seqnum < row.seqnum)
+    if same_second_is_older:
+        created_at = journal.created_at <= _get_created_at(context, row)
+    else:
+        created_at = journal.created_at < row.created_at
+    return and_(journal.seqnum.is_(None), created_at)
+
+
+def _is_newer(context, row):
+    journal = sdn_journal_db.SdnJournal
+    if row.seqnum is not None:
+        return journal.seqnum > row.seqnum
+    # A row created in the same second counts as newer. Callers use this to
+    # ignore stale rows, so erring this way can only make them ignore a row.
+    return or_(journal.seqnum.isnot(None),
+               journal.created_at >= _get_created_at(context, row))
+
+
 @db_api.CONTEXT_READER
 def check_for_older_ops(context, row):
     q = context.session.query(sdn_journal_db.SdnJournal).filter(
         or_(sdn_journal_db.SdnJournal.state == sdn_const.PENDING,
             sdn_journal_db.SdnJournal.state == sdn_const.PROCESSING),
         sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
-        sdn_journal_db.SdnJournal.created_at < row.created_at,
+        _is_older(context, row, same_second_is_older=False),
         sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def check_for_newer_ops(context, row, operation):
+    q = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
+        sdn_journal_db.SdnJournal.operation == operation,
+        _is_newer(context, row),
+        sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def check_for_unfinished_delete_not_newer(context, row):
+    # Without seqnum, check_for_older_ops() can't order rows created in the
+    # same second, which is the norm for the DELETE of a port's old binding
+    # and the POST of its new one. Sending the POST first would let the
+    # DELETE remove the port from the partition key after its POST has
+    # completed.
+    q = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
+        sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
+        sdn_journal_db.SdnJournal.operation == sdn_const.DELETE,
+        _is_older(context, row, same_second_is_older=True),
+        sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def port_has_provisioning_block(context, port_id, entity):
+    q = context.session.query(pb_model.ProvisioningBlock).join(
+        models_v2.Port,
+        models_v2.Port.standard_attr_id ==
+        pb_model.ProvisioningBlock.standard_attr_id).filter(
+        models_v2.Port.id == port_id,
+        pb_model.ProvisioningBlock.entity == entity)
     return context.session.query(q.exists()).scalar()
 
 
@@ -152,11 +225,19 @@ def delete_row(context, row=None, row_id=None):
 def create_pending_row(context, object_type, object_uuid,
                        operation, data):
     data = jsonutils.dumps(data)
+    # This runs in the transaction that changes the object, so changes to
+    # one object get consecutive numbers. If concurrent transactions still
+    # pick the same number, the unique constraint fails one of them, and it
+    # is retried.
+    last_seqnum = context.session.query(
+        func.max(sdn_journal_db.SdnJournal.seqnum)).filter(
+        sdn_journal_db.SdnJournal.object_uuid == object_uuid).scalar()
     row = sdn_journal_db.SdnJournal(object_type=object_type,
                                     object_uuid=object_uuid,
                                     operation=operation, data=data,
                                     created_at=func.now(),
-                                    state=sdn_const.PENDING)
+                                    state=sdn_const.PENDING,
+                                    seqnum=(last_seqnum or 0) + 1)
     context.session.add(row)
 
 

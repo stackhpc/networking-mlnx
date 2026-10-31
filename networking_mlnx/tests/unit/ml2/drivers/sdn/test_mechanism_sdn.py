@@ -591,7 +591,9 @@ class SdnDriverTestCase(SdnConfigBase):
 
     @db_api.CONTEXT_WRITER
     def _decrease_row_created_time(self, context, row):
+        # Rows recorded before seqnum was added are ordered by created_at.
         row.created_at -= datetime.timedelta(hours=1)
+        row.seqnum = None
         self.context.session.merge(row)
 
     def test_sync_multiple_updates(self):
@@ -617,6 +619,183 @@ class SdnDriverTestCase(SdnConfigBase):
         rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
         self.assertEqual(3, len(rows))
 
+    def test__get_client_id_from_port(self):
+        for opt_name in ('client-id', '61', 61):
+            port = {'extra_dhcp_opts': [
+                {'opt_name': 'tftp-server', 'opt_value': '10.0.0.1'},
+                {'opt_name': opt_name, 'opt_value': CLIENT_ID}]}
+            self.assertEqual(CLIENT_ID,
+                             self.mech._get_client_id_from_port(port))
+        self.assertIsNone(self.mech._get_client_id_from_port(
+            {'extra_dhcp_opts': [{'opt_name': '60', 'opt_value': 'x'}]}))
+        self.assertIsNone(self.mech._get_client_id_from_port({}))
+
+    def test_create_baremetal_port_with_numeric_client_id(self):
+        # Ironic sets the client ID option by number, which Neutron returns
+        # as the string '61'.
+        context = self._get_mock_port_operation_context()
+        context.current.update({
+            'binding:vnic_type': portbindings.VNIC_BAREMETAL,
+            'binding:profile': {},
+            'extra_dhcp_opts': [{'opt_name': '61', 'opt_value': CLIENT_ID,
+                                 'ip_version': 4}]})
+
+        self.mech.create_port_precommit(context)
+
+        row = db.get_oldest_pending_db_row_with_lock(self.context)
+        self.assertEqual(sdn_const.POST, row['operation'])
+        self.assertEqual(sdn_const.PORT, row['object_type'])
+        opts = jsonutils.loads(row['data'])['extra_dhcp_opts']
+        self.assertEqual([{'opt_name': 'client-id', 'opt_value': CLIENT_ID,
+                           'ip_version': 4}], opts)
+
+    @staticmethod
+    def _response(status_code, text=''):
+        response = requests.Response()
+        response.status_code = status_code
+        response._content = text.encode()
+        response.url = cfg.CONF.sdn.url
+        return response
+
+    @db_api.CONTEXT_WRITER
+    def _make_row_older(self, context, row):
+        row.last_retried -= datetime.timedelta(hours=1)
+        context.session.merge(row)
+
+    def _sync_port_and_network_rows(self, port_status_code):
+        self._call_operation_object(sdn_const.POST, sdn_const.PORT)
+        # Make the port row the oldest, so that it is synced first.
+        self._make_row_older(self.context,
+                             db.get_all_db_rows(self.context)[0])
+        self._call_operation_object(sdn_const.PUT, sdn_const.NETWORK)
+
+        def request(method, url, **kwargs):
+            if url.endswith("/Port"):
+                return self._response(port_status_code,
+                                      'Missing attribute(s): client-id')
+            return self._response(requests.codes.accepted, '"app/jobs/1"')
+
+        with mock.patch('requests.request',
+                        side_effect=request) as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+        rows = {row.object_type: row
+                for row in db.get_all_db_rows(self.context)}
+        return mock_request, rows[sdn_const.PORT], rows[sdn_const.NETWORK]
+
+    def test_sync_rejected_row_fails_without_blocking(self):
+        mock_request, port_row, network_row = (
+            self._sync_port_and_network_rows(requests.codes.bad_request))
+
+        self.assertEqual(2, mock_request.call_count)
+        self.assertEqual(sdn_const.FAILED, port_row.state)
+        self.assertEqual(0, port_row.retry_count)
+        self.assertEqual(sdn_const.MONITORING, network_row.state)
+
+    def test_sync_unavailable_row_is_retried(self):
+        mock_request, port_row, network_row = (
+            self._sync_port_and_network_rows(
+                requests.codes.service_unavailable))
+
+        self.assertEqual(1, mock_request.call_count)
+        self.assertEqual(sdn_const.PENDING, port_row.state)
+        self.assertEqual(1, port_row.retry_count)
+        self.assertEqual(sdn_const.PENDING, network_row.state)
+
+    def test_sync_rejected_delete_is_retried(self):
+        # UFM rejects deleting a network while hosts are associated with it,
+        # which can change, so the deletion must be retried.
+        self._call_operation_object(sdn_const.DELETE, sdn_const.NETWORK)
+        response = self._response(
+            requests.codes.bad_request,
+            'Network ID cannot be removed because it is associated to one '
+            'or more hosts')
+        with self._limit_row_fetches(), \
+                mock.patch('requests.request', return_value=response):
+            self.thread._sync_pending_rows(self.context, False)
+
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.PENDING, row.state)
+        self.assertEqual(1, row.retry_count)
+
+    @db_api.CONTEXT_WRITER
+    def _set_row_created_at(self, context, row, created_at):
+        row.created_at = created_at
+        context.session.merge(row)
+
+    def _sync_port_rows_from_same_second(self, operations):
+        """Record operations on a port in order, in one second, and sync
+
+        The first row is made the first to be synced, if nothing stops it.
+        """
+        context = self._get_mock_port_operation_context()
+        for operation in operations:
+            db.create_pending_row(self.context, sdn_const.PORT,
+                                  context.current['id'], operation,
+                                  context.current)
+        rows = sorted(db.get_all_db_rows(self.context),
+                      key=lambda row: row.seqnum)
+        self._make_row_older(self.context, rows[-1])
+        # Store the same second in both rows, as MySQL's DATETIME does.
+        now = datetime.datetime(2026, 10, 30, 12, 0, 0)
+        for row in rows:
+            self._set_row_created_at(self.context, row, now)
+
+        response = self._response(requests.codes.accepted, '"app/jobs/1"')
+        with mock.patch('requests.request',
+                        return_value=response) as mock_request:
+            self.thread._sync_pending_rows(self.context, False)
+        return [c[0][0] for c in mock_request.call_args_list]
+
+    def test_port_delete_then_post_from_same_second(self):
+        # Moving a port to another host records the DELETE of its old
+        # binding and the POST of the new one, usually in the same second.
+        self.assertEqual(['DELETE'], self._sync_port_rows_from_same_second(
+            [sdn_const.DELETE, sdn_const.POST]))
+        rows = {r.operation: r for r in db.get_all_db_rows(self.context)}
+        self.assertEqual(sdn_const.PENDING, rows[sdn_const.POST].state)
+        self.assertEqual(sdn_const.MONITORING, rows[sdn_const.DELETE].state)
+
+    def test_port_post_then_delete_from_same_second(self):
+        # For example, a port unbound right after its binding.
+        self.assertEqual(['POST'], self._sync_port_rows_from_same_second(
+            [sdn_const.POST, sdn_const.DELETE]))
+        rows = {r.operation: r for r in db.get_all_db_rows(self.context)}
+        self.assertEqual(sdn_const.MONITORING, rows[sdn_const.POST].state)
+        self.assertEqual(sdn_const.PENDING, rows[sdn_const.DELETE].state)
+
+    def test_failed_delete_job_stops_holding_post(self):
+        # A failed job counts towards retry_count, so the DELETE ends FAILED
+        # and stops holding the POST that waits for it.
+        self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
+        self.thread = journal.SdnJournalThread()
+        context = self._get_mock_port_operation_context()
+        db.create_pending_row(self.context, sdn_const.PORT,
+                              context.current['id'], sdn_const.DELETE,
+                              context.current)
+        row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+
+        response = self._response(requests.codes.ok,
+                                  jsonutils.dumps({'Status': 'Failed'}))
+        with mock.patch('requests.request', return_value=response):
+            self.thread._sync_progress_rows(self.context)
+
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.FAILED, row.state)
+        self.assertFalse(db.check_for_pending_or_processing_ops(
+            self.context, row.object_uuid))
+
+    def test_cleanup_deletes_old_failed_rows(self):
+        self._call_operation_object(sdn_const.POST, sdn_const.NETWORK)
+        row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_state(self.context, row, sdn_const.FAILED)
+        self._make_row_older(self.context, row)
+
+        cleanup.JournalCleanup().delete_completed_rows(self.context)
+
+        self.assertEqual([], db.get_all_db_rows(self.context))
+
     def test_network_filter_phynset(self):
         self.conf.set_override(
             'physical_networks', 'datacenter', sdn_const.GROUP_OPT)
@@ -637,3 +816,438 @@ class SdnDriverTestCase(SdnConfigBase):
             self._call_operation_object(operation, object_type)
             rows = db.get_all_db_rows(self.context)
             self.assertEqual(0, len(rows))
+
+
+class SdnPkeyProvisioningTestCase(SdnConfigBase):
+    """Ports are held DOWN until the controller adds them to their pkey"""
+
+    HOST = 'r-ufm177'
+
+    _db_cleanup = SdnDriverTestCase._db_cleanup
+    _get_segments_list = SdnDriverTestCase._get_segments_list
+    _get_mock_port_operation_context = (
+        SdnDriverTestCase._get_mock_port_operation_context)
+    _get_mock_bind_operation_context = (
+        SdnDriverTestCase._get_mock_bind_operation_context)
+    _get_mock_commit_operation_context = (
+        SdnDriverTestCase._get_mock_commit_operation_context)
+    _response = staticmethod(SdnDriverTestCase._response)
+    _set_row_created_at = SdnDriverTestCase._set_row_created_at
+
+    def setUp(self):
+        super(SdnPkeyProvisioningTestCase, self).setUp()
+        self.context = nl_context.get_admin_context()
+        mock.patch.object(journal.SdnJournalThread,
+                          'start_sync_thread').start()
+        self.mech = sdn_mech_driver.SDNMechanismDriver()
+        self.mech.initialize()
+        self.thread = journal.SdnJournalThread()
+        self.addCleanup(self._db_cleanup)
+
+    def _rows(self):
+        return db.get_all_db_rows(self.context)
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_blocks_vlan_port(self, add_block):
+        context = self._get_mock_commit_operation_context()
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_called_once_with(
+            context._plugin_context, context.current['id'], resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_does_not_block_flat_port(self, add_block):
+        context = self._get_mock_commit_operation_context(
+            net_type=constants.TYPE_FLAT)
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_not_called()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_after_failed_binding_blocks_port(self, add_block):
+        context = self._get_mock_commit_operation_context()
+        context.original_vif_type = portbindings.VIF_TYPE_BINDING_FAILED
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_called_once()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_activation_on_other_host_blocks_port(self, add_block):
+        # Nova live migrates by activating a binding that is already bound
+        # on the destination host.
+        context = self._get_mock_commit_operation_context()
+        context.original_vif_type = mech_mlnx.VIF_TYPE_IB_HOSTDEV
+        context.original_host = 'old-host'
+        context.original['binding:host_id'] = 'old-host'
+        self.mech.update_port_precommit(context)
+
+        rows = {r.operation: r for r in self._rows()}
+        self.assertEqual({sdn_const.DELETE, sdn_const.POST}, set(rows))
+        self.assertEqual('old-host', jsonutils.loads(
+            rows[sdn_const.DELETE].data)['binding:host_id'])
+        self.assertEqual(self.HOST, jsonutils.loads(
+            rows[sdn_const.POST].data)['binding:host_id'])
+        add_block.assert_called_once()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_cold_migration_moves_port(self, remove_block, add_block):
+        # Nova cold migrates or evacuates by updating the port's host, and
+        # ML2 then binds and commits the binding on the new host.
+        context = self._get_mock_port_operation_context()
+        context.original = dict(context.current)
+        context.original['binding:host_id'] = 'old-host'
+        context.original_host = 'old-host'
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.DELETE],
+                         [r.operation for r in self._rows()])
+        remove_block.assert_called_once()
+        add_block.assert_not_called()
+
+        self._db_cleanup()
+        self.mech.update_port_precommit(
+            self._get_mock_commit_operation_context())
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_called_once()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_does_not_block_ethernet_port(self, add_block):
+        context = self._get_mock_commit_operation_context()
+        context.vif_type = portbindings.VIF_TYPE_HW_VEB
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_not_called()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_without_sync_does_nothing(self, add_block):
+        self.conf.set_override('sync_enabled', False, sdn_const.GROUP_OPT)
+        self.mech.update_port_precommit(
+            self._get_mock_commit_operation_context())
+
+        self.assertEqual([], self._rows())
+        add_block.assert_not_called()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_update_of_bound_port_does_not_block(self, add_block):
+        context = self._get_mock_commit_operation_context()
+        context.original_vif_type = 'ib_hostdev'
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.PUT], [r.operation for r in self._rows()])
+        add_block.assert_not_called()
+
+    def test_binding_commit_fails_if_block_fails(self):
+        # The exception must reach ML2, so that the binding fails rather than
+        # leaving the port free to become ACTIVE.
+        with mock.patch.object(provisioning_blocks,
+                               'add_provisioning_component',
+                               side_effect=RuntimeError):
+            self.assertRaises(RuntimeError, self.mech.update_port_precommit,
+                              self._get_mock_commit_operation_context())
+
+    def test_bind_port_leaves_pkey_port_to_binding_commit(self):
+        self.mech.bind_port(self._get_mock_bind_operation_context())
+        self.assertEqual([], self._rows())
+
+    def test_bind_port_sends_other_ports(self):
+        context = self._get_mock_bind_operation_context()
+        context.current['binding:vnic_type'] = portbindings.VNIC_NORMAL
+        self.mech.bind_port(context)
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+
+    def _baremetal(self, context, client_id=CLIENT_ID):
+        port = context.current
+        port['binding:vnic_type'] = portbindings.VNIC_BAREMETAL
+        port['device_owner'] = 'baremetal:none'
+        port['binding:host_id'] = 'node-uuid'
+        port['binding:profile'] = {'local_link_information': [{}]}
+        if client_id:
+            port['extra_dhcp_opts'] = [{'opt_name': 'client-id',
+                                        'opt_value': client_id}]
+        return context
+
+    def _bind_baremetal(self, net_type=constants.TYPE_VLAN, **kwargs):
+        context = self._baremetal(self._get_mock_bind_operation_context(),
+                                  **kwargs)
+        segments = self._get_segments_list(net_type=net_type)
+        context.network.network_segments = segments
+        context.segments_to_bind = segments
+        self.mech.bind_port(context)
+        return context.set_binding.call_args[0][3]
+
+    def test_bind_ib_baremetal_port_on_vlan_leaves_it_down(self):
+        self.assertIsNone(self._bind_baremetal())
+
+    def test_bind_ib_baremetal_port_on_flat_makes_it_active(self):
+        self.assertEqual(constants.PORT_STATUS_ACTIVE,
+                         self._bind_baremetal(net_type=constants.TYPE_FLAT))
+
+    def test_bind_ethernet_baremetal_port_makes_it_active(self):
+        self.assertEqual(constants.PORT_STATUS_ACTIVE,
+                         self._bind_baremetal(client_id=None))
+
+    def test_host_update_of_ib_baremetal_port_waits_for_binding(self):
+        # Ironic sets the host, client-id and local link information in one
+        # update, and ML2 then binds the port.
+        context = self._baremetal(self._get_mock_port_operation_context())
+        context.original = dict(context.current)
+        context.original.update({'binding:host_id': None,
+                                 'extra_dhcp_opts': [],
+                                 'binding:profile': {}})
+        context.host = 'node-uuid'
+        context.original_host = None
+        self.mech.update_port_precommit(context)
+        self.assertEqual([], self._rows())
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_blocks_ib_baremetal_port(self, add_block):
+        context = self._baremetal(self._get_mock_commit_operation_context())
+        context.host = context.original_host = 'node-uuid'
+        context.vif_type = portbindings.VIF_TYPE_OTHER
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_called_once_with(
+            context._plugin_context, context.current['id'], resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
+
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_unbind_ib_baremetal_port_removes_block(self, remove_block):
+        context = self._baremetal(self._get_mock_port_operation_context())
+        context.original = dict(context.current)
+        context.current = dict(context.current, **{'binding:host_id': ''})
+        context.original_host = 'node-uuid'
+        context.host = ''
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.DELETE],
+                         [r.operation for r in self._rows()])
+        remove_block.assert_called_once()
+
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_unbind_removes_block(self, remove_block):
+        context = self._get_mock_port_operation_context()
+        context.original = dict(context.current)
+        context.current['binding:host_id'] = None
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.DELETE],
+                         [r.operation for r in self._rows()])
+        remove_block.assert_called_once_with(
+            context._plugin_context, context.current['id'], resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
+
+    def _make_blocked_port(self, row_host=HOST):
+        """Create a port bound to HOST, with a block and its POST row"""
+        with self.port(is_admin=True, device_owner=DEVICE_OWNER_COMPUTE,
+                       arg_list=(portbindings.HOST_ID,),
+                       **{portbindings.HOST_ID: self.HOST}) as port:
+            port_id = port['port']['id']
+            network_id = port['port']['network_id']
+        self._db_cleanup()
+        provisioning_blocks.add_provisioning_component(
+            self.context, port_id, resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
+        db.create_pending_row(self.context, sdn_const.PORT, port_id,
+                              sdn_const.POST,
+                              {'id': port_id, 'network_id': network_id,
+                               'binding:host_id': row_host})
+        return port_id, self._rows()[0]
+
+    @db_api.CONTEXT_WRITER
+    def _set_created_at_in_db(self, context, row, seconds):
+        row.created_at += datetime.timedelta(seconds=seconds)
+        context.session.merge(row)
+
+    def _set_created_at(self, row, seconds):
+        self._set_created_at_in_db(self.context, row, seconds)
+
+    def _is_blocked(self, port_id):
+        return db.port_has_provisioning_block(
+            self.context, port_id, sdn_const.PROVISIONING_ENTITY)
+
+    def _complete_job(self, row, status='Completed'):
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+        response = self._response(requests.codes.ok,
+                                  jsonutils.dumps({'Status': status}))
+        with mock.patch('requests.request', return_value=response), \
+                mock.patch.object(provisioning_blocks,
+                                  'provisioning_complete') as complete, \
+                mock.patch.object(plugin.Ml2Plugin,
+                                  'update_port_status') as set_status:
+            self.thread._sync_progress_rows(self.context)
+        return complete, set_status
+
+    def _sync_pending(self, response=None, side_effect=None):
+        with mock.patch('requests.request', return_value=response,
+                        side_effect=side_effect), \
+                mock.patch.object(plugin.Ml2Plugin,
+                                  'update_port_status') as set_status:
+            self.thread._sync_pending_rows(self.context, False)
+        return set_status
+
+    def _assert_port_failed(self, port_id, set_status):
+        self.assertEqual(sdn_const.FAILED, self._rows()[0].state)
+        set_status.assert_called_once_with(
+            mock.ANY, port_id, constants.PORT_STATUS_ERROR)
+        # The block stays, so that the agent can't make the port ACTIVE.
+        self.assertTrue(self._is_blocked(port_id))
+
+    def test_completed_job_releases_port_unmocked(self):
+        # Runs provisioning_complete for real, which must not be called in a
+        # transaction.
+        port_id, row = self._make_blocked_port()
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+        response = self._response(requests.codes.ok,
+                                  jsonutils.dumps({'Status': 'Completed'}))
+        with mock.patch('requests.request', return_value=response):
+            self.thread._sync_progress_rows(self.context)
+
+        self.assertFalse(self._is_blocked(port_id))
+
+    def test_completed_job_with_older_post_releases_port(self):
+        port_id, old_row = self._make_blocked_port()
+        self._set_created_at(old_row, -60)
+        db.create_pending_row(self.context, sdn_const.PORT, port_id,
+                              sdn_const.POST, jsonutils.loads(old_row.data))
+        row = [r for r in self._rows() if r.id != old_row.id][0]
+        complete, _set_status = self._complete_job(row)
+
+        self.assertFalse(self._is_blocked(port_id))
+        complete.assert_called_once()
+
+    def test_completion_error_keeps_port_blocked(self):
+        port_id, row = self._make_blocked_port()
+        with mock.patch.object(provisioning_blocks,
+                               'remove_provisioning_component',
+                               side_effect=RuntimeError):
+            complete, _set_status = self._complete_job(row)
+
+        self.assertEqual(sdn_const.COMPLETED, self._rows()[0].state)
+        self.assertTrue(self._is_blocked(port_id))
+        complete.assert_not_called()
+
+    def test_completed_job_releases_port(self):
+        port_id, row = self._make_blocked_port()
+        complete, set_status = self._complete_job(row)
+
+        self.assertEqual(sdn_const.COMPLETED, self._rows()[0].state)
+        self.assertFalse(self._is_blocked(port_id))
+        complete.assert_called_once_with(
+            mock.ANY, port_id, resources.PORT, sdn_const.PROVISIONING_ENTITY)
+        set_status.assert_not_called()
+
+    def test_completed_job_for_other_host_keeps_port_blocked(self):
+        # A late job for a binding that has since moved to another host
+        # must not release the port's new binding.
+        port_id, row = self._make_blocked_port(row_host='old-host')
+        complete, _set_status = self._complete_job(row)
+
+        self.assertTrue(self._is_blocked(port_id))
+        complete.assert_not_called()
+
+    def test_completed_job_of_newest_post_from_same_second(self):
+        # Two binding commits in one second, for example an unbind and a
+        # rebind on the same host. The newer POST releases the port.
+        port_id, old_row = self._make_blocked_port()
+        db.create_pending_row(self.context, sdn_const.PORT, port_id,
+                              sdn_const.POST, jsonutils.loads(old_row.data))
+        rows = sorted(self._rows(), key=lambda row: row.seqnum)
+        now = datetime.datetime(2026, 10, 30, 12, 0, 0)
+        for row in rows:
+            self._set_row_created_at(self.context, row, now)
+        complete, _set_status = self._complete_job(rows[-1])
+
+        self.assertFalse(self._is_blocked(port_id))
+        complete.assert_called_once()
+
+    def test_completed_job_with_newer_post_keeps_port_blocked(self):
+        port_id, row = self._make_blocked_port()
+        db.create_pending_row(self.context, sdn_const.PORT, port_id,
+                              sdn_const.POST, jsonutils.loads(row.data))
+        complete, _set_status = self._complete_job(row)
+
+        self.assertTrue(self._is_blocked(port_id))
+        complete.assert_not_called()
+
+    def test_failed_job_fails_port(self):
+        port_id, row = self._make_blocked_port()
+        _complete, set_status = self._complete_job(row, status='Failed')
+        self._assert_port_failed(port_id, set_status)
+
+    def test_rejected_post_for_other_host_does_not_fail_port(self):
+        port_id, _row = self._make_blocked_port(row_host='old-host')
+        set_status = self._sync_pending(
+            self._response(requests.codes.bad_request, 'Bad request'))
+
+        self.assertEqual(sdn_const.FAILED, self._rows()[0].state)
+        set_status.assert_not_called()
+        self.assertTrue(self._is_blocked(port_id))
+
+    def test_failed_job_for_other_host_is_retried(self):
+        _port_id, row = self._make_blocked_port(row_host='old-host')
+        _complete, set_status = self._complete_job(row, status='Failed')
+
+        self.assertEqual(sdn_const.PENDING, self._rows()[0].state)
+        self.assertEqual(1, self._rows()[0].retry_count)
+        set_status.assert_not_called()
+
+    def test_unreadable_job_failing_after_retries_fails_port(self):
+        self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
+        self.thread = journal.SdnJournalThread()
+        port_id, row = self._make_blocked_port()
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+        with mock.patch('requests.request',
+                        return_value=self._response(requests.codes.ok,
+                                                    'not json')), \
+                mock.patch.object(plugin.Ml2Plugin,
+                                  'update_port_status') as set_status:
+            self.thread._sync_progress_rows(self.context)
+        self._assert_port_failed(port_id, set_status)
+
+    def test_rejected_post_fails_port(self):
+        port_id, _row = self._make_blocked_port()
+        set_status = self._sync_pending(
+            self._response(requests.codes.bad_request, 'Bad request'))
+        self._assert_port_failed(port_id, set_status)
+
+    def test_not_implemented_post_fails_port(self):
+        port_id, _row = self._make_blocked_port()
+        set_status = self._sync_pending(
+            self._response(requests.codes.not_implemented))
+        self._assert_port_failed(port_id, set_status)
+
+    def test_not_implemented_post_of_unblocked_port_completes(self):
+        port_id, _row = self._make_blocked_port()
+        provisioning_blocks.remove_provisioning_component(
+            self.context, port_id, resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
+        set_status = self._sync_pending(
+            self._response(requests.codes.not_implemented))
+
+        self.assertEqual(sdn_const.COMPLETED, self._rows()[0].state)
+        set_status.assert_not_called()
+
+    def test_post_without_job_id_fails_port(self):
+        port_id, _row = self._make_blocked_port()
+        set_status = self._sync_pending(
+            self._response(requests.codes.ok, 'null'))
+        self._assert_port_failed(port_id, set_status)
+
+    def test_post_failing_after_retries_fails_port(self):
+        self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
+        self.thread = journal.SdnJournalThread()
+        port_id, _row = self._make_blocked_port()
+        set_status = self._sync_pending(
+            self._response(requests.codes.service_unavailable))
+        self._assert_port_failed(port_id, set_status)
