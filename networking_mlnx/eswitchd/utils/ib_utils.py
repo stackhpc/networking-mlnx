@@ -262,19 +262,19 @@ class IbUtils(object):
             LOG.error("Unsupported vf device type: %s ", vf_device_type)
 
     def _config_vlan_ib_mlnx4(self, pf_mlx_dev, vf_pci_slot, hca_port, vlan):
-        if vlan == 0:
-            ppkey_idx = self._get_pkey_idx(
-                IbUtils.DEFAULT_PKEY, pf_mlx_dev, hca_port)
-            if ppkey_idx is not None:
-                self._config_vf_pkey(
-                    ppkey_idx, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
-                    vf_pci_slot, hca_port)
-        else:
-            ppkey_idx = self._get_pkey_idx(vlan, pf_mlx_dev, hca_port)
-            if ppkey_idx is not None:
-                self._config_vf_pkey(
-                    ppkey_idx, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
-                    vf_pci_slot, hca_port)
+        pkey = IbUtils.DEFAULT_PKEY if vlan == 0 else vlan
+        ppkey_idx = self._get_pkey_idx(pkey, pf_mlx_dev, hca_port)
+        if ppkey_idx is None:
+            # Leave the VF in no partition, rather than the one it was in.
+            self._config_vf_pkey(
+                IbUtils.INVALID_PKEY, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
+                vf_pci_slot, hca_port)
+            raise RuntimeError(
+                "Partition key %#x is not in the pkey table of %s port %s" %
+                (pkey, pf_mlx_dev, hca_port))
+        self._config_vf_pkey(
+            ppkey_idx, IbUtils.DEFAULT_PKEY_IDX, pf_mlx_dev,
+            vf_pci_slot, hca_port)
 
     def _get_pkey_idx(self, vlan, pf_mlx_dev, hca_port):
         """get PKEY index for provided vlan ID
