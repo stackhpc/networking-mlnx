@@ -143,7 +143,8 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             return self._gen_client_id_with_prefix(port,
                 LEGACY_CLIENT_ID_PREFIX)
 
-    def _gen_client_id_with_prefix(self, port, prefix):
+    @staticmethod
+    def _gen_client_id_with_prefix(port, prefix):
         _MIDDLE = ':00:00:'
         mac_address = port["mac_address"]
         mac_first = mac_address[:8]

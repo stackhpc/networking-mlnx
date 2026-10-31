@@ -327,7 +327,8 @@ class SDNMechanismDriver(api.MechanismDriver):
         # and port is created separately
         elif (orig_port_dict[portbindings.HOST_ID] and
               not port_dic[portbindings.HOST_ID] and
-              self._is_send_bind_port(orig_port_dict)):
+              (self._is_send_bind_port(orig_port_dict) or
+               self._is_direct_port(orig_port_dict))):
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
             self._remove_pkey_block(context)
@@ -335,7 +336,8 @@ class SDNMechanismDriver(api.MechanismDriver):
         elif (orig_port_dict[portbindings.HOST_ID] and
               port_dic[portbindings.HOST_ID] !=
               orig_port_dict[portbindings.HOST_ID] and
-              self._is_send_bind_port(orig_port_dict)):
+              (self._is_send_bind_port(orig_port_dict) or
+               self._is_direct_port(orig_port_dict))):
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
             self._remove_pkey_block(context)
@@ -364,7 +366,8 @@ class SDNMechanismDriver(api.MechanismDriver):
         vnic_type = port_dic[portbindings.VNIC_TYPE]
         if (port_dic[portbindings.HOST_ID] and
             (vnic_type == portbindings.VNIC_BAREMETAL or
-             self._is_send_bind_port(port_dic))):
+             self._is_send_bind_port(port_dic) or
+             self._is_direct_port(port_dic))):
             port_dic[NETWORK_QOS_POLICY] = (
                 self._get_network_qos_policy(context,
                                              port_dic['network_id']))
@@ -409,26 +412,48 @@ class SDNMechanismDriver(api.MechanismDriver):
     def _is_direct_port(port):
         return port[portbindings.VNIC_TYPE] == portbindings.VNIC_DIRECT
 
+    @staticmethod
+    def _get_client_id_opts(port):
+        """Return a port's DHCP client ID options, by value and IP version"""
+        return sorted(
+            (str(opt.get('opt_value')), str(opt.get('ip_version')))
+            for opt in port.get('extra_dhcp_opts') or ()
+            if (isinstance(opt, dict) and
+                str(opt.get('opt_name')) in (
+                    edo_ext.DHCP_OPT_CLIENT_ID,
+                    str(edo_ext.DHCP_OPT_CLIENT_ID_NUM))))
+
+    @staticmethod
+    def _is_generated_client_id(port, client_id):
+        """Check if a client ID is the one mlnx_infiniband generates"""
+        return any(
+            client_id.lower() ==
+            mech_mlnx.MlnxMechanismDriver._gen_client_id_with_prefix(
+                port, prefix).lower()
+            for prefix in (mech_mlnx.HARDWARE_CLIENT_ID_PREFIX,
+                           mech_mlnx.LEGACY_CLIENT_ID_PREFIX))
+
     def _check_client_id_change(self, context, original=None):
-        """Only let administrators set a port's DHCP client ID
+        """Only let administrators and services set a DHCP client ID
 
         The SDN controller takes an InfiniBand port's GUID from its client
-        ID, so a project that could set it could have the controller add
-        another port's GUID to its network's partition key. Nova, Ironic and
-        the mlnx_infiniband mechanism driver set it as administrators.
+        ID, so a project that could set it on any of its ports, even one
+        that is not yet a direct or bare metal port, could have the
+        controller add another port's GUID to its network's partition key.
+        Nova, Ironic and the mlnx_infiniband mechanism driver set it as
+        administrators or services.
         """
-        port = context.current
-        if (context._plugin_context.is_admin or
-                port[portbindings.VNIC_TYPE] not in (
-                    portbindings.VNIC_DIRECT, portbindings.VNIC_BAREMETAL)):
+        plugin_context = context._plugin_context
+        if (plugin_context.is_admin or
+                getattr(plugin_context, 'is_service_role', False)):
             return
-        orig_client_id = (self._get_client_id_from_port(original)
-                          if original else None)
-        if self._get_client_id_from_port(port) != orig_client_id:
+        orig_opts = self._get_client_id_opts(original) if original else []
+        if self._get_client_id_opts(context.current) != orig_opts:
             raise n_exc.InvalidInput(error_message=_(
-                "Only an administrator can set the DHCP client ID of a "
-                "direct or bare metal port, which identifies its "
-                "InfiniBand GUID."))
+                "Only administrators and services can set or change the "
+                "DHCP client ID of a port on a network that the SDN "
+                "controller manages, since the controller identifies "
+                "InfiniBand ports by it."))
 
     def _is_ib_baremetal_port(self, port):
         """Check if the port is a bare metal node's InfiniBand port"""
@@ -460,6 +485,22 @@ class SDNMechanismDriver(api.MechanismDriver):
         This runs in the transaction that commits the binding, so if it
         fails, the binding fails too.
         """
+        client_id_opts = self._get_client_id_opts(context.current)
+        if len(client_id_opts) > 1:
+            # Which one the controller would use is undefined.
+            raise n_exc.InvalidInput(error_message=_(
+                "Port %s has more than one DHCP client ID") %
+                context.current['id'])
+        if (context.vif_type == mech_mlnx.VIF_TYPE_IB_HOSTDEV and
+                client_id_opts and
+                not self._is_generated_client_id(context.current,
+                                                 client_id_opts[0][0])):
+            # The controller would add the GUID of the client ID to the
+            # partition key, but the VF's GUID is derived from the MAC
+            # address.
+            raise n_exc.InvalidInput(error_message=_(
+                "The DHCP client ID of port %s doesn't match its MAC "
+                "address") % context.current['id'])
         if context.original_host and context.original_host != context.host:
             # A binding activated on another host replaces the old one.
             SDNMechanismDriver._record_in_journal(

@@ -1323,10 +1323,86 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
                                           CLIENT_ID, orig_client_id=CLIENT_ID)
         self.mech.update_port_precommit(context)
 
-    def test_project_can_set_client_id_of_normal_port(self):
+    def test_project_cant_set_client_id_of_normal_port(self):
+        # The port could become a direct or bare metal port later.
         context = self._client_id_context(portbindings.VNIC_NORMAL,
                                           CLIENT_ID)
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.create_port_precommit, context)
+
+    def test_project_cant_add_client_id_for_ipv6(self):
+        context = self._client_id_context(portbindings.VNIC_DIRECT,
+                                          CLIENT_ID, orig_client_id=CLIENT_ID)
+        context.current['extra_dhcp_opts'] = (
+            context.original['extra_dhcp_opts'] +
+            [{'opt_name': 'client-id', 'opt_value': '20:00',
+              'ip_version': 6}])
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.update_port_precommit, context)
+
+    def test_service_can_set_client_id(self):
+        context = self._client_id_context(portbindings.VNIC_BAREMETAL,
+                                          CLIENT_ID)
+        context._plugin_context = nl_context.Context(
+            'user', 'project', roles=['service'])
         self.mech.create_port_precommit(context)
+        self.mech.update_port_precommit(context)
+
+    def test_binding_commit_with_two_client_ids_fails(self):
+        context = self._baremetal(self._get_mock_commit_operation_context())
+        context.current['extra_dhcp_opts'].append(
+            {'opt_name': '61', 'opt_value': '20:00'})
+        context.original = dict(context.current)
+        context.host = context.original_host = 'node-uuid'
+        context.vif_type = portbindings.VIF_TYPE_OTHER
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.update_port_precommit, context)
+        self.assertEqual([], self._rows())
+
+    def test_binding_commit_with_other_client_id_fails(self):
+        # The VF's GUID is derived from the MAC address, so the controller
+        # must not be given another one.
+        context = self._get_mock_commit_operation_context()
+        context.current['extra_dhcp_opts'] = [
+            {'opt_name': 'client-id', 'opt_value': CLIENT_ID}]
+        context.original = dict(context.current)
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.update_port_precommit, context)
+        self.assertEqual([], self._rows())
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_with_generated_client_id(self, add_block):
+        for prefix in (mech_mlnx.HARDWARE_CLIENT_ID_PREFIX,
+                       mech_mlnx.LEGACY_CLIENT_ID_PREFIX):
+            context = self._get_mock_commit_operation_context()
+            client_id = (
+                mech_mlnx.MlnxMechanismDriver._gen_client_id_with_prefix(
+                    context.current, prefix))
+            context.current['extra_dhcp_opts'] = [
+                {'opt_name': 'client-id', 'opt_value': client_id.upper()}]
+            context.original = dict(context.current)
+            self.mech.update_port_precommit(context)
+            self.assertEqual([sdn_const.POST],
+                             [r.operation for r in self._rows()])
+            self._db_cleanup()
+
+    def test_delete_of_non_compute_direct_port_is_sent(self):
+        context = self._get_mock_port_operation_context()
+        context.current['device_owner'] = 'other:owner'
+        self.mech.delete_port_precommit(context)
+        self.assertEqual([sdn_const.DELETE],
+                         [r.operation for r in self._rows()])
+
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_unbind_of_non_compute_direct_port_is_sent(self, remove_block):
+        context = self._get_mock_port_operation_context()
+        context.current['device_owner'] = 'other:owner'
+        context.original = dict(context.current)
+        context.current = dict(context.current, **{'binding:host_id': None})
+        context.host = None
+        self.mech.update_port_precommit(context)
+        self.assertEqual([sdn_const.DELETE],
+                         [r.operation for r in self._rows()])
 
     def test_admin_can_set_client_id(self):
         context = self._client_id_context(portbindings.VNIC_BAREMETAL,
