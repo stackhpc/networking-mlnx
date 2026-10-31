@@ -12,17 +12,20 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import datetime
 import unittest.mock as mock
 
 from neutron.db import provisioning_blocks
 from neutron.plugins.ml2 import plugin
 from neutron_lib.callbacks import resources
 from neutron_lib import context as nl_context
+from neutron_lib.db import api as db_api
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
 import requests
 
 from networking_mlnx.db import db
+from networking_mlnx.journal import cleanup
 from networking_mlnx.journal import dependency_validations
 from networking_mlnx.journal import journal
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
@@ -152,6 +155,69 @@ class TestGuidOrdering(SdnJournalTestBase):
         self.assertEqual(sdn_const.FAILED, post.state)
         set_status.assert_called_once_with(mock.ANY, port_id, 'ERROR')
         self.assertTrue(self._is_blocked(port_id))
+
+
+class TestGuidOrderingByAge(SdnJournalTestBase):
+    """Only older deletions are waited for, so rows can't wait in a cycle"""
+
+    _port_data = TestGuidOrdering._port_data
+    _record = TestGuidOrdering._record
+
+    @db_api.CONTEXT_WRITER
+    def _set_created_at(self, context, row, created_at):
+        row.created_at = created_at
+        context.session.merge(row)
+
+    def _at(self, row, minutes):
+        self._set_created_at(
+            self.context, row,
+            datetime.datetime(2026, 10, 31, 12, 0) +
+            datetime.timedelta(minutes=minutes))
+
+    def test_post_does_not_wait_for_newer_delete(self):
+        post = self._record(sdn_const.POST, self._port_data())
+        delete = self._record(sdn_const.DELETE, self._port_data(),
+                              sdn_const.MONITORING)
+        self._at(post, 0)
+        self._at(delete, 1)
+        self.assertTrue(dependency_validations.validate(self.context, post))
+
+    def test_two_deploy_attempts_dont_wait_for_each_other(self):
+        # A controller outage spans two deployment attempts, each of which
+        # binds a port and then deletes it.
+        port_1 = self._port_data(client_id=CLIENT_ID)
+        port_2 = self._port_data(client_id=CLIENT_ID)
+        rows = [self._record(sdn_const.POST, port_1),
+                self._record(sdn_const.DELETE, port_1),
+                self._record(sdn_const.POST, port_2),
+                self._record(sdn_const.DELETE, port_2)]
+        for minutes, row in enumerate(rows):
+            self._at(row, minutes)
+        self.assertTrue(dependency_validations.validate(self.context,
+                                                        rows[0]))
+
+
+class TestKeepFailedPortDeletes(SdnJournalTestBase):
+
+    @db_api.CONTEXT_WRITER
+    def _make_old(self, context, row):
+        row.last_retried -= datetime.timedelta(days=1)
+        context.session.merge(row)
+
+    def test_failed_port_delete_is_kept(self):
+        rows = {}
+        for object_type, operation in ((sdn_const.PORT, sdn_const.DELETE),
+                                       (sdn_const.PORT, sdn_const.POST),
+                                       (sdn_const.NETWORK, sdn_const.DELETE)):
+            db.create_pending_row(self.context, object_type,
+                                  uuidutils.generate_uuid(), operation, {})
+        for row in self._rows():
+            db.update_db_row_state(self.context, row, sdn_const.FAILED)
+            self._make_old(self.context, row)
+            rows[(row.object_type, row.operation)] = row
+        cleanup.JournalCleanup().delete_completed_rows(self.context)
+        self.assertEqual([(sdn_const.PORT, sdn_const.DELETE)],
+                         [(r.object_type, r.operation) for r in self._rows()])
 
 
 class TestReleaseBeforeCompleting(SdnJournalTestBase):

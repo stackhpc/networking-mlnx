@@ -23,6 +23,7 @@ from oslo_serialization import jsonutils
 from sqlalchemy import and_
 from sqlalchemy import asc
 from sqlalchemy import func
+from sqlalchemy import not_
 from sqlalchemy import or_
 
 from networking_mlnx.db.models import sdn_journal_db
@@ -170,15 +171,19 @@ def get_port_guid_identity(port):
     return mac.lower() if mac else None
 
 
-def _get_port_deletes_with_same_guid(context, row, states):
+def _get_port_deletes_with_same_guid(context, row, states, not_newer=False):
     identity = get_port_guid_identity(jsonutils.loads(row.data or '{}'))
     if not identity:
         return []
-    rows = context.session.query(sdn_journal_db.SdnJournal).filter(
+    query = context.session.query(sdn_journal_db.SdnJournal).filter(
         sdn_journal_db.SdnJournal.object_type == sdn_const.PORT,
         sdn_journal_db.SdnJournal.operation == sdn_const.DELETE,
         sdn_journal_db.SdnJournal.state.in_(states),
-        sdn_journal_db.SdnJournal.object_uuid != row.object_uuid).all()
+        sdn_journal_db.SdnJournal.object_uuid != row.object_uuid)
+    if not_newer:
+        query = query.filter(sdn_journal_db.SdnJournal.created_at <=
+                             _get_created_at(context, row))
+    rows = query.all()
     return [r for r in rows
             if get_port_guid_identity(jsonutils.loads(r.data or '{}')) ==
             identity]
@@ -189,10 +194,12 @@ def check_for_unfinished_delete_of_same_guid(context, row):
     """Check if another port with the row's GUID is still being deleted
 
     Until the controller has deleted it, the GUID can still be in the other
-    port's partition key.
+    port's partition key. Only deletions recorded no later than the row
+    count, so that rows can't wait for each other: a deletion waits for
+    older operations on its own port.
     """
     return bool(_get_port_deletes_with_same_guid(
-        context, row, _UNFINISHED_STATES))
+        context, row, _UNFINISHED_STATES, not_newer=True))
 
 
 @db_api.CONTEXT_READER
@@ -408,12 +415,17 @@ def update_maintenance_operation(context, operation=None):
 
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
-def delete_rows_by_state_and_time(context, state, time_delta):
+def delete_rows_by_state_and_time(context, state, time_delta,
+                                  keep_port_deletes=False):
     now = context.session.execute(func.now()).scalar()
-    context.session.query(sdn_journal_db.SdnJournal).filter(
+    query = context.session.query(sdn_journal_db.SdnJournal).filter(
         sdn_journal_db.SdnJournal.state == state,
-        sdn_journal_db.SdnJournal.last_retried < now - time_delta).delete(
-        synchronize_session=False)
+        sdn_journal_db.SdnJournal.last_retried < now - time_delta)
+    if keep_port_deletes:
+        query = query.filter(not_(and_(
+            sdn_journal_db.SdnJournal.object_type == sdn_const.PORT,
+            sdn_journal_db.SdnJournal.operation == sdn_const.DELETE)))
+    query.delete(synchronize_session=False)
     context.session.expire_all()
 
 
