@@ -69,7 +69,7 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
     def try_to_bind_segment_for_agent(self, context, segment, agent):
         if not self.check_segment_for_agent(segment, agent):
             return False
-        if not self._is_pkey_enforced(segment):
+        if not self._is_pkey_enforced(context, segment):
             LOG.error("Not binding port %(port)s to segment %(segment)s: "
                       "nothing adds ports on physical network %(physnet)s "
                       "to their partition key. Enable the %(sdn)s mechanism "
@@ -97,7 +97,7 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
         return True
 
     @staticmethod
-    def _is_pkey_enforced(segment):
+    def _is_pkey_enforced(context, segment):
         """Check if something adds ports on the segment to its pkey
 
         Ports on flat segments use the default partition key.
@@ -106,11 +106,16 @@ class MlnxMechanismDriver(mech_agent.SimpleAgentMechanismDriverBase):
             return True
         if cfg.CONF.mlnx.allow_unenforced_pkeys:
             return True
+        if (SDN_MECHANISM_DRIVER not in cfg.CONF.ml2.mechanism_drivers or
+                not cfg.CONF.sdn.sync_enabled):
+            return False
+        # mlnx_sdn_assist only sends the ports of networks whose segments'
+        # physical networks it syncs, all of them.
         physnets = cfg.CONF.sdn.physical_networks
-        return (SDN_MECHANISM_DRIVER in cfg.CONF.ml2.mechanism_drivers and
-                cfg.CONF.sdn.sync_enabled and
-                (sdn_const.ANY in physnets or
-                 segment[api.PHYSICAL_NETWORK] in physnets))
+        if sdn_const.ANY in physnets:
+            return True
+        return all(network_segment.get(api.PHYSICAL_NETWORK) in physnets
+                   for network_segment in context.network.network_segments)
 
     @staticmethod
     def _get_port_with_same_guid(context):

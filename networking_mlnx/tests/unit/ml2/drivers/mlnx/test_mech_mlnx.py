@@ -438,6 +438,23 @@ class MlnxMechanismPkeyTestCase(MlnxMechanismBaseTestCase):
         self._enable_sdn(physical_networks=['other_physical_network'])
         self.assertFalse(self._bind()[0])
 
+    def test_vlan_on_network_with_unsynced_segment_is_not_bound(self):
+        # mlnx_sdn_assist doesn't send ports of a network with a segment on a
+        # physical network that it doesn't sync.
+        self._enable_sdn(physical_networks=['fake_physical_network'])
+        segment = {api.ID: 'segment_id',
+                   api.NETWORK_TYPE: constants.TYPE_VLAN,
+                   api.PHYSICAL_NETWORK: 'fake_physical_network',
+                   api.SEGMENTATION_ID: 1234}
+        other_segment = dict(segment, **{
+            api.ID: 'other_segment_id',
+            api.PHYSICAL_NETWORK: 'other_physical_network'})
+        context = base.FakePortContext(self.AGENT_TYPE, self.AGENTS,
+                                       [segment, other_segment],
+                                       portbindings.VNIC_DIRECT)
+        self.assertFalse(self.driver.try_to_bind_segment_for_agent(
+            context, segment, self.AGENTS[0]))
+
     def test_vlan_with_sdn_sync_disabled_is_not_bound(self):
         self._enable_sdn()
         cfg.CONF.set_override('sync_enabled', False, 'sdn')
