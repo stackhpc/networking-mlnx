@@ -44,6 +44,11 @@ def check_journal_states():
     if state_type is None:
         raise JournalSchemaError(
             reason=_("the %s table has no state column") % table)
+    # Recording a row sets its sequence number, so without the column
+    # every port and network operation would fail.
+    if not any(col['name'] == 'seqnum' for col in columns):
+        raise JournalSchemaError(
+            reason=_("the %s table has no seqnum column") % table)
     db_states = getattr(state_type, 'enums', None)
     # Some databases, such as SQLite, have no enum type to check.
     if not db_states:

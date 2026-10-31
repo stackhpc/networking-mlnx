@@ -838,7 +838,9 @@ class SdnDriverTestCase(SdnConfigBase):
 
     @db_api.CONTEXT_WRITER
     def _decrease_row_created_time(self, context, row):
+        # Rows recorded before seqnum was added are ordered by created_at.
         row.created_at -= datetime.timedelta(hours=1)
+        row.seqnum = None
         self.context.session.merge(row)
 
     def test_sync_multiple_updates(self):
@@ -967,32 +969,46 @@ class SdnDriverTestCase(SdnConfigBase):
         row.created_at = created_at
         context.session.merge(row)
 
-    def test_port_post_waits_for_delete_from_same_second(self):
-        # Moving a port to another host records the DELETE of its old
-        # binding and the POST of the new one, usually in the same second.
-        self._call_operation_object(sdn_const.POST, sdn_const.PORT)
-        post_row = db.get_all_db_rows(self.context)[0]
-        # Sync the POST first, if nothing stops it.
-        self._make_row_older(self.context, post_row)
+    def _sync_port_rows_from_same_second(self, operations):
+        """Record operations on a port in order, in one second, and sync
+
+        The first row is made the first to be synced, if nothing stops it.
+        """
         context = self._get_mock_port_operation_context()
-        db.create_pending_row(self.context, sdn_const.PORT,
-                              context.current['id'], sdn_const.DELETE,
-                              context.current)
+        for operation in operations:
+            db.create_pending_row(self.context, sdn_const.PORT,
+                                  context.current['id'], operation,
+                                  context.current)
+        rows = sorted(db.get_all_db_rows(self.context),
+                      key=lambda row: row.seqnum)
+        self._make_row_older(self.context, rows[-1])
         # Store the same second in both rows, as MySQL's DATETIME does.
         now = datetime.datetime(2026, 10, 30, 12, 0, 0)
-        for row in db.get_all_db_rows(self.context):
+        for row in rows:
             self._set_row_created_at(self.context, row, now)
 
         response = self._response(requests.codes.accepted, '"app/jobs/1"')
         with mock.patch('requests.request',
                         return_value=response) as mock_request:
             self.thread._sync_pending_rows(self.context, False)
+        return [c[0][0] for c in mock_request.call_args_list]
 
-        self.assertEqual(['DELETE'],
-                         [c[0][0] for c in mock_request.call_args_list])
+    def test_port_delete_then_post_from_same_second(self):
+        # Moving a port to another host records the DELETE of its old
+        # binding and the POST of the new one, usually in the same second.
+        self.assertEqual(['DELETE'], self._sync_port_rows_from_same_second(
+            [sdn_const.DELETE, sdn_const.POST]))
         rows = {r.operation: r for r in db.get_all_db_rows(self.context)}
         self.assertEqual(sdn_const.PENDING, rows[sdn_const.POST].state)
         self.assertEqual(sdn_const.MONITORING, rows[sdn_const.DELETE].state)
+
+    def test_port_post_then_delete_from_same_second(self):
+        # For example, a port unbound right after its binding.
+        self.assertEqual(['POST'], self._sync_port_rows_from_same_second(
+            [sdn_const.POST, sdn_const.DELETE]))
+        rows = {r.operation: r for r in db.get_all_db_rows(self.context)}
+        self.assertEqual(sdn_const.MONITORING, rows[sdn_const.POST].state)
+        self.assertEqual(sdn_const.PENDING, rows[sdn_const.DELETE].state)
 
     def test_failed_delete_job_stops_holding_post(self):
         # A failed job counts towards retry_count, so the DELETE ends FAILED
@@ -1063,6 +1079,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
     _get_mock_commit_operation_context = (
         SdnDriverTestCase._get_mock_commit_operation_context)
     _response = staticmethod(SdnDriverTestCase._response)
+    _set_row_created_at = SdnDriverTestCase._set_row_created_at
 
     def setUp(self):
         super(SdnPkeyProvisioningTestCase, self).setUp()
@@ -1384,6 +1401,21 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
 
         self.assertTrue(self._is_blocked(port_id))
         complete.assert_not_called()
+
+    def test_completed_job_of_newest_post_from_same_second(self):
+        # Two binding commits in one second, for example an unbind and a
+        # rebind on the same host. The newer POST releases the port.
+        port_id, old_row = self._make_blocked_port()
+        db.create_pending_row(self.context, sdn_const.PORT, port_id,
+                              sdn_const.POST, jsonutils.loads(old_row.data))
+        rows = sorted(self._rows(), key=lambda row: row.seqnum)
+        now = datetime.datetime(2026, 10, 30, 12, 0, 0)
+        for row in rows:
+            self._set_row_created_at(self.context, row, now)
+        complete, _set_status = self._complete_job(rows[-1])
+
+        self.assertFalse(self._is_blocked(port_id))
+        complete.assert_called_once()
 
     def test_completed_job_with_newer_post_keeps_port_blocked(self):
         port_id, row = self._make_blocked_port()

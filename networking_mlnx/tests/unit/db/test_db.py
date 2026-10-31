@@ -48,15 +48,23 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         with db_api.CONTEXT_WRITER.using(self.db_context):
             self.db_context.session.merge(row)
 
-    def _test_validate_updates(self, rows, time_deltas, expected_validations):
+    def _get_rows_in_order(self):
+        return sorted(db.get_all_db_rows(self.db_context),
+                      key=lambda row: (row.object_uuid, row.seqnum))
+
+    def _test_validate_updates(self, rows, time_deltas, expected_validations,
+                               seqnum=False):
         for row in rows:
             db.create_pending_row(self.db_context, *row)
 
-        # update row created_at
-        rows = db.get_all_db_rows(self.db_context)
+        # update row created_at. Without seqnum, as for rows recorded before
+        # it was added, the rows are ordered by created_at.
+        rows = self._get_rows_in_order()
         now = datetime.now()
         for row, time_delta in zip(rows, time_deltas):
             row.created_at = now - timedelta(hours=time_delta)
+            if not seqnum:
+                row.seqnum = None
             self._update_row(row)
 
         # validate if there are older rows
@@ -99,6 +107,79 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
     def test_validate_updates_same_created_time(self):
         self._test_validate_updates(
             [self.UPDATE_ROW, self.UPDATE_ROW], [0, 0], [True, True])
+
+    def test_validate_updates_same_created_time_by_seqnum(self):
+        self._test_validate_updates(
+            [self.UPDATE_ROW, self.UPDATE_ROW], [0, 0], [True, False],
+            seqnum=True)
+
+    def test_validate_updates_seqnum_overrides_created_time(self):
+        self._test_validate_updates(
+            [self.UPDATE_ROW, self.UPDATE_ROW], [0, 1], [True, False],
+            seqnum=True)
+
+    def test_validate_updates_row_without_seqnum_is_older(self):
+        for row in (self.UPDATE_ROW, self.UPDATE_ROW):
+            db.create_pending_row(self.db_context, *row)
+        old_row, new_row = self._get_rows_in_order()
+        # The old row was recorded before seqnum was added, after the new
+        # row by the clock.
+        old_row.seqnum = None
+        old_row.created_at = datetime.now() + timedelta(hours=1)
+        self._update_row(old_row)
+
+        self.assertTrue(db.check_for_older_ops(self.db_context, new_row))
+        self.assertFalse(db.check_for_older_ops(self.db_context, old_row))
+        self.assertFalse(db.check_for_newer_ops(
+            self.db_context, new_row, sdn_const.PUT))
+        self.assertTrue(db.check_for_newer_ops(
+            self.db_context, old_row, sdn_const.PUT))
+
+    def test_create_pending_row_numbers_rows_per_object(self):
+        other_row = list(self.UPDATE_ROW)
+        other_row[1] += 'a'
+        for row in (self.UPDATE_ROW, self.UPDATE_ROW, other_row):
+            db.create_pending_row(self.db_context, *row)
+
+        self.assertEqual(
+            [('id', 1), ('id', 2), ('ida', 1)],
+            [(row.object_uuid, row.seqnum)
+             for row in self._get_rows_in_order()])
+
+    def test_create_pending_row_after_rows_without_seqnum(self):
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row = db.get_all_db_rows(self.db_context)[0]
+        row.seqnum = None
+        self._update_row(row)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+
+        self.assertEqual([1, None], sorted(
+            (row.seqnum for row in db.get_all_db_rows(self.db_context)),
+            key=lambda seqnum: seqnum is None))
+
+    def test_duplicate_seqnum_is_rejected(self):
+        # Concurrent transactions that pick the same number for an object
+        # fail, and are retried.
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+
+        def add_duplicate():
+            with db_api.CONTEXT_WRITER.using(self.db_context):
+                self.db_context.session.add(sdn_journal_db.SdnJournal(
+                    object_type=sdn_const.NETWORK, object_uuid='id',
+                    operation=sdn_const.PUT, data='{}', seqnum=1,
+                    state=sdn_const.PENDING))
+
+        self.assertRaises(exception.DBDuplicateEntry, add_duplicate)
+
+    def test_newer_ops_by_seqnum(self):
+        for row in (self.UPDATE_ROW, self.UPDATE_ROW):
+            db.create_pending_row(self.db_context, *row)
+        first, second = self._get_rows_in_order()
+
+        self.assertTrue(db.check_for_newer_ops(
+            self.db_context, first, sdn_const.PUT))
+        self.assertFalse(db.check_for_newer_ops(
+            self.db_context, second, sdn_const.PUT))
 
     def test_validate_updates_different_object_uuid(self):
         other_row = list(self.UPDATE_ROW)

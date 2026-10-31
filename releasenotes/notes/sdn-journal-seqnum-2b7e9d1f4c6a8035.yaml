@@ -1,0 +1,17 @@
+---
+upgrade:
+  - |
+    A database migration adds a ``seqnum`` column, and a unique constraint on
+    ``object_uuid`` and ``seqnum``, to the ``sdn_journal`` table. Run
+    ``neutron-db-manage --subproject networking-mlnx upgrade head``.
+fixes:
+  - |
+    The ``mlnx_sdn_assist`` journal now orders the operations on a network or
+    port by a sequence number recorded with each operation, rather than by
+    their creation time, which only has a resolution of a second. Operations
+    recorded in the same second, such as the ``DELETE`` and ``POST`` of a port
+    that moves to another host, or two ``POST`` operations of a port that is
+    bound twice in a second, are now sent in the order they were recorded.
+    Previously a port could be left ``DOWN``, or out of its partition key, in
+    these cases. Operations recorded before the upgrade are sent first, in
+    the old order.

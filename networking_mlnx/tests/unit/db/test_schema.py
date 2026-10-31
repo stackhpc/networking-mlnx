@@ -29,7 +29,8 @@ class CheckJournalStatesTestCase(testlib_api.SqlTestCaseLight):
     def _check_with_db_states(self, states):
         # The type that reflection returns for a MySQL or MariaDB enum.
         columns = [{'name': 'id', 'type': sa.String(36)},
-                   {'name': 'state', 'type': mysql.ENUM(*states)}]
+                   {'name': 'state', 'type': mysql.ENUM(*states)},
+                   {'name': 'seqnum', 'type': sa.BigInteger()}]
         with mock.patch.object(sa, 'inspect') as inspect:
             inspect.return_value.get_columns.return_value = columns
             schema.check_journal_states()
@@ -65,6 +66,16 @@ class CheckJournalStatesTestCase(testlib_api.SqlTestCaseLight):
             e = self.assertRaises(schema.JournalSchemaError,
                                   schema.check_journal_states)
         self.assertIn('the sdn_journal table has no state column', str(e))
+
+    def test_missing_seqnum_column(self):
+        # The schema before the migration that added the sequence numbers.
+        columns = [{'name': 'id', 'type': sa.String(36)},
+                   {'name': 'state', 'type': mysql.ENUM(*ALL_STATES)}]
+        with mock.patch.object(sa, 'inspect') as inspect:
+            inspect.return_value.get_columns.return_value = columns
+            e = self.assertRaises(schema.JournalSchemaError,
+                                  schema.check_journal_states)
+        self.assertIn('the sdn_journal table has no seqnum column', str(e))
 
     def test_database_without_enums(self):
         # The unit test database is SQLite, which has no enum type.
