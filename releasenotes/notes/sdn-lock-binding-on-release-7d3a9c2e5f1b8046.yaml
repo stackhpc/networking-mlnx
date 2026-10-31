@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    The ``mlnx_sdn_assist`` journal now locks a port's binding while it
+    releases the port, or sets it to ``ERROR``, after the SDN controller's job
+    for the port has finished. Previously, if the port was rebound at the
+    same moment, the result of the job for the old binding could release the
+    new binding before the controller had added it to the partition key.

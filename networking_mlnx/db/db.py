@@ -16,6 +16,8 @@ import datetime
 
 from neutron.db.models import provisioning_block as pb_model
 from neutron.db import models_v2
+from neutron.plugins.ml2 import models as ml2_models
+from neutron_lib import constants as n_const
 from neutron_lib.db import api as db_api
 from oslo_serialization import jsonutils
 from sqlalchemy import and_
@@ -132,6 +134,19 @@ def check_for_unfinished_delete_not_newer(context, row):
         _is_older(context, row, same_second_is_older=True),
         sdn_journal_db.SdnJournal.id != row.id)
     return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_WRITER
+def lock_port_binding(context, port_id):
+    """Lock the port's active binding until the transaction ends
+
+    ML2 changes this row to unbind, rebind or move the port, so this keeps
+    the binding from changing under the caller.
+    """
+    context.session.query(ml2_models.PortBinding).filter(
+        ml2_models.PortBinding.port_id == port_id,
+        ml2_models.PortBinding.status == n_const.ACTIVE).with_for_update(
+    ).first()
 
 
 @db_api.CONTEXT_READER

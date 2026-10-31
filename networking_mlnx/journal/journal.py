@@ -80,10 +80,26 @@ def _get_blocked_port_id(context, row):
     return port_id
 
 
+def _get_blocked_port_id_locked(context, row):
+    """Like _get_blocked_port_id(), but lock the port's binding first
+
+    The caller must be in a writer transaction. Until it ends, a concurrent
+    unbind, rebind or move of the port waits, so the port is still the one
+    that the row holds when the caller acts on it.
+    """
+    if (row.object_type != sdn_const.PORT or
+            row.operation != sdn_const.POST):
+        return None
+    # Lock before anything else is read, so that the reads that follow see
+    # any change that committed while this waited for the lock.
+    db.lock_port_binding(context, row.object_uuid)
+    return _get_blocked_port_id(context, row)
+
+
 def _complete_port_provisioning(context, row):
     try:
         with db_api.CONTEXT_WRITER.using(context):
-            port_id = _get_blocked_port_id(context, row)
+            port_id = _get_blocked_port_id_locked(context, row)
             if not port_id:
                 return
             provisioning_blocks.remove_provisioning_component(
@@ -103,7 +119,8 @@ def _complete_port_provisioning(context, row):
 
 def _fail_port_provisioning(context, row):
     try:
-        port_id = _get_blocked_port_id(context, row)
+        with db_api.CONTEXT_WRITER.using(context):
+            port_id = _get_blocked_port_id_locked(context, row)
         if not port_id:
             return
         # Keep the provisioning block, so that the port can't become ACTIVE

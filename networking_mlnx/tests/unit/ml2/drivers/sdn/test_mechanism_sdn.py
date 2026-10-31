@@ -15,6 +15,7 @@ import datetime
 import unittest.mock as mock
 
 from neutron.db import provisioning_blocks
+from neutron.plugins.ml2 import models as ml2_models
 from neutron.plugins.ml2 import plugin
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron.tests.unit import testlib_api
@@ -1401,6 +1402,45 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
 
         self.assertTrue(self._is_blocked(port_id))
         complete.assert_not_called()
+
+    def test_completed_job_locks_binding(self):
+        port_id, row = self._make_blocked_port()
+        with mock.patch.object(db, 'lock_port_binding',
+                               wraps=db.lock_port_binding) as lock:
+            self._complete_job(row)
+
+        lock.assert_called_once_with(mock.ANY, port_id)
+        self.assertFalse(self._is_blocked(port_id))
+
+    def test_failed_job_locks_binding(self):
+        port_id, row = self._make_blocked_port()
+        with mock.patch.object(db, 'lock_port_binding',
+                               wraps=db.lock_port_binding) as lock:
+            _complete, set_status = self._complete_job(row, status='Failed')
+
+        lock.assert_called_with(mock.ANY, port_id)
+        self._assert_port_failed(port_id, set_status)
+
+    @db_api.CONTEXT_WRITER
+    def _move_binding(self, context, port_id, host):
+        context.session.query(ml2_models.PortBinding).filter_by(
+            port_id=port_id).update({'host': host})
+
+    def test_completed_job_after_binding_moved_keeps_port_blocked(self):
+        # The port was rebound on another host after its POST was sent.
+        port_id, row = self._make_blocked_port()
+        self._move_binding(self.context, port_id, 'new-host')
+        complete, set_status = self._complete_job(row)
+
+        self.assertTrue(self._is_blocked(port_id))
+        complete.assert_not_called()
+
+    def test_failed_job_after_binding_moved_does_not_fail_port(self):
+        port_id, row = self._make_blocked_port()
+        self._move_binding(self.context, port_id, 'new-host')
+        _complete, set_status = self._complete_job(row, status='Failed')
+
+        set_status.assert_not_called()
 
     def test_completed_job_of_newest_post_from_same_second(self):
         # Two binding commits in one second, for example an unbind and a
