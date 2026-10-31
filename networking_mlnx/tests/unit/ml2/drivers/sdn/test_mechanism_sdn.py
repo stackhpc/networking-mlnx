@@ -1192,6 +1192,75 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         self.mech.bind_port(context)
         self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
 
+    def _baremetal(self, context, client_id=CLIENT_ID):
+        port = context.current
+        port['binding:vnic_type'] = portbindings.VNIC_BAREMETAL
+        port['device_owner'] = 'baremetal:none'
+        port['binding:host_id'] = 'node-uuid'
+        port['binding:profile'] = {'local_link_information': [{}]}
+        if client_id:
+            port['extra_dhcp_opts'] = [{'opt_name': 'client-id',
+                                        'opt_value': client_id}]
+        return context
+
+    def _bind_baremetal(self, net_type=constants.TYPE_VLAN, **kwargs):
+        context = self._baremetal(self._get_mock_bind_operation_context(),
+                                  **kwargs)
+        segments = self._get_segments_list(net_type=net_type)
+        context.network.network_segments = segments
+        context.segments_to_bind = segments
+        self.mech.bind_port(context)
+        return context.set_binding.call_args[0][3]
+
+    def test_bind_ib_baremetal_port_on_vlan_leaves_it_down(self):
+        self.assertIsNone(self._bind_baremetal())
+
+    def test_bind_ib_baremetal_port_on_flat_makes_it_active(self):
+        self.assertEqual(constants.PORT_STATUS_ACTIVE,
+                         self._bind_baremetal(net_type=constants.TYPE_FLAT))
+
+    def test_bind_ethernet_baremetal_port_makes_it_active(self):
+        self.assertEqual(constants.PORT_STATUS_ACTIVE,
+                         self._bind_baremetal(client_id=None))
+
+    def test_host_update_of_ib_baremetal_port_waits_for_binding(self):
+        # Ironic sets the host, client-id and local link information in one
+        # update, and ML2 then binds the port.
+        context = self._baremetal(self._get_mock_port_operation_context())
+        context.original = dict(context.current)
+        context.original.update({'binding:host_id': None,
+                                 'extra_dhcp_opts': [],
+                                 'binding:profile': {}})
+        context.host = 'node-uuid'
+        context.original_host = None
+        self.mech.update_port_precommit(context)
+        self.assertEqual([], self._rows())
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_blocks_ib_baremetal_port(self, add_block):
+        context = self._baremetal(self._get_mock_commit_operation_context())
+        context.host = context.original_host = 'node-uuid'
+        context.vif_type = portbindings.VIF_TYPE_OTHER
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_called_once_with(
+            context._plugin_context, context.current['id'], resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
+
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_unbind_ib_baremetal_port_removes_block(self, remove_block):
+        context = self._baremetal(self._get_mock_port_operation_context())
+        context.original = dict(context.current)
+        context.current = dict(context.current, **{'binding:host_id': ''})
+        context.original_host = 'node-uuid'
+        context.host = ''
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.DELETE],
+                         [r.operation for r in self._rows()])
+        remove_block.assert_called_once()
+
     @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
     def test_unbind_removes_block(self, remove_block):
         context = self._get_mock_port_operation_context()

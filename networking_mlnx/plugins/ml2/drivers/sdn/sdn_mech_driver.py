@@ -39,6 +39,8 @@ LOG = log.getLogger(__name__)
 cfg.CONF.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
 
 NETWORK_QOS_POLICY = 'network_qos_policy'
+UNBOUND_VIF_TYPES = (portbindings.VIF_TYPE_UNBOUND,
+                     portbindings.VIF_TYPE_BINDING_FAILED)
 
 
 def context_validator(context_type=None):
@@ -203,10 +205,18 @@ class SDNMechanismDriver(api.MechanismDriver):
                 continue
 
             # set port to active if supported
+            status = neutron_const.PORT_STATUS_ACTIVE
+            if (self._is_ib_baremetal_port(port_dic) and
+                    segment[api.NETWORK_TYPE] == neutron_const.TYPE_VLAN and
+                    self._is_sdn_sync_enabled()):
+                # The journal makes the port ACTIVE once the controller has
+                # added it to the partition key. Ironic waits for that
+                # before it powers the node on.
+                status = None
             context.set_binding(segment[api.ID],
                                 self.vif_type,
                                 self.vif_details,
-                                neutron_const.PORT_STATUS_ACTIVE)
+                                status)
 
     @context_validator(sdn_const.NETWORK)
     @error_handler
@@ -270,6 +280,15 @@ class SDNMechanismDriver(api.MechanismDriver):
                 self._is_binding_commit(context)):
             self._send_bound_port(context)
             return
+        if (self._is_ib_baremetal_port(port_dic) and
+                port_dic[portbindings.HOST_ID]):
+            if self._is_binding_commit(context):
+                self._send_bound_port(context)
+                return
+            if context.vif_type in UNBOUND_VIF_TYPES:
+                # ML2 binds the port next, and it is sent when the binding
+                # is committed, so that the port is held DOWN from then.
+                return
         # Check if we get a client id after binding the bare metal port,
         # and report the port to sdn controller
         if vnic_type == portbindings.VNIC_BAREMETAL:
@@ -284,6 +303,7 @@ class SDNMechanismDriver(api.MechanismDriver):
                     not port_dic[portbindings.HOST_ID]):
                 SDNMechanismDriver._record_in_journal(
                     context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
+                self._remove_pkey_block(context)
                 return
             # InfiniBand Case
             current_client_id = self._get_client_id_from_port(port_dic)
@@ -296,6 +316,7 @@ class SDNMechanismDriver(api.MechanismDriver):
                     not port_dic[portbindings.HOST_ID]):
                 SDNMechanismDriver._record_in_journal(
                     context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
+                self._remove_pkey_block(context)
                 return
         # delete the port in case instance is deleted
         # and port is created separately
@@ -386,6 +407,11 @@ class SDNMechanismDriver(api.MechanismDriver):
                 device_owner.lower().startswith(
                     neutron_const.DEVICE_OWNER_COMPUTE_PREFIX))
 
+    def _is_ib_baremetal_port(self, port):
+        """Check if the port is a bare metal node's InfiniBand port"""
+        return (port[portbindings.VNIC_TYPE] == portbindings.VNIC_BAREMETAL and
+                bool(self._get_client_id_from_port(port)))
+
     @staticmethod
     def _is_binding_commit(context):
         """Check if ML2 is committing a new binding of the port
@@ -393,21 +419,20 @@ class SDNMechanismDriver(api.MechanismDriver):
         That is either a new binding of an unbound port, or the activation
         of a binding on another host, which is how Nova live migrates.
         """
-        unbound = (portbindings.VIF_TYPE_UNBOUND,
-                   portbindings.VIF_TYPE_BINDING_FAILED)
         return (context.host and
-                context.vif_type not in unbound and
-                (context.original_vif_type in unbound or
+                context.vif_type not in UNBOUND_VIF_TYPES and
+                (context.original_vif_type in UNBOUND_VIF_TYPES or
                  context.original_host != context.host))
 
     def _send_bound_port(self, context):
         """Send a newly bound port to the SDN controller
 
-        For an InfiniBand port on a VLAN segment, also keep the port DOWN
-        until the controller has added it to the partition key. The journal
-        then completes the provisioning block, or sets the port to ERROR if
-        the controller fails, so that Nova doesn't start an instance whose
-        port isn't isolated.
+        For an InfiniBand port on a VLAN segment, an instance's or a bare
+        metal node's, also keep the port DOWN until the controller has added
+        it to the partition key. The journal then completes the provisioning
+        block, or sets the port to ERROR if the controller fails. The agent
+        enables an instance's virtual function only once the port is ACTIVE,
+        and Ironic waits for that before it powers the node on.
 
         This runs in the transaction that commits the binding, so if it
         fails, the binding fails too.
@@ -424,7 +449,8 @@ class SDNMechanismDriver(api.MechanismDriver):
         SDNMechanismDriver._record_in_journal(
             context, sdn_const.PORT, sdn_const.POST, context.current)
         if (segment[api.NETWORK_TYPE] == neutron_const.TYPE_VLAN and
-                context.vif_type == mech_mlnx.VIF_TYPE_IB_HOSTDEV):
+                (context.vif_type == mech_mlnx.VIF_TYPE_IB_HOSTDEV or
+                 self._is_ib_baremetal_port(context.current))):
             provisioning_blocks.add_provisioning_component(
                 context._plugin_context, context.current['id'],
                 resources.PORT, sdn_const.PROVISIONING_ENTITY)
