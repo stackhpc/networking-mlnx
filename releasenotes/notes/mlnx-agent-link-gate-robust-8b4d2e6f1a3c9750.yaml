@@ -1,0 +1,18 @@
+---
+security:
+  - |
+    ``neutron-mlnx-agent`` now sets the link of every assigned virtual
+    function on each polling iteration, rather than only when it thinks the
+    state changed, so a link that Nova disabled by plugging the virtual
+    function again is enabled again. When it can't get its ports from the
+    Neutron server, it disables every link except those it enabled for the
+    same port, including after it restarts. It also disables the link of a
+    virtual function that is no longer assigned.
+fixes:
+  - |
+    After a live migration, ``neutron-mlnx-agent`` now reports the port of
+    the virtual function that the instance has on the destination host,
+    rather than one it had there before, so the port becomes ``ACTIVE``.
+    The agent also releases removed virtual functions before configuring
+    new ones, so a virtual function given to another port within one
+    polling interval keeps the new port's configuration.

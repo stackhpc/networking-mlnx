@@ -109,6 +109,12 @@ class EswitchManager(object):
             self.provision_network(port_id, port_mac,
                                    network_id, network_type,
                                    physical_network, seg_id)
+        # Forget earlier entries for the port or the VF, so that the map
+        # only has the current ones.
+        for data in six.itervalues(self.network_map):
+            data['ports'] = [port for port in data['ports']
+                             if port['port_id'] != port_id and
+                             port['pci_slot'] != pci_slot]
         net_map = self.network_map[network_id]
         net_map['ports'].append({'port_id': port_id, 'port_mac': port_mac,
                                  'pci_slot': pci_slot})
@@ -218,6 +224,11 @@ class MlnxEswitchRpcCallbacks(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
         # host. ML2 now waits for this agent to report the port up again.
         port_id = kwargs.get('port_id')
         port = self.eswitch.get_port_by_id(port_id)
+        if port:
+            # The VF may have changed since the port was configured here.
+            mac = port[0]
+            port = next((vnic for vnic in self.eswitch.get_vnics()
+                         if vnic[0].lower() == mac.lower()), None)
         if port:
             self.agent.add_port_update(port)
             LOG.debug("binding_activate RPC received for port %s", port_id)
@@ -372,11 +383,13 @@ class MlnxEswitchNeutronAgent(object):
         resync_b = False
         device_added_updated = port_info['added'] | port_info['updated']
 
+        # Release removed devices first, since a VF that Nova gave to
+        # another port is removed and added in the same iteration.
+        if port_info['removed']:
+            resync_b = self.treat_devices_removed(port_info['removed'])
         if device_added_updated:
             resync_a = self.treat_devices_added_or_updated(
                 device_added_updated)
-        if port_info['removed']:
-            resync_b = self.treat_devices_removed(port_info['removed'])
         # If one of the above opertaions fails => resync with plugin
         return (resync_a | resync_b)
 
@@ -491,6 +504,14 @@ class MlnxEswitchNeutronAgent(object):
         vnics = self.eswitch.get_vnics()
         current_slots = {pci_slot for _mac, pci_slot in vnics}
         for pci_slot in set(self.link_states) - current_slots:
+            # The VF is no longer assigned. eswitchd disables its link when
+            # Nova unplugs it, but Nova ignores failures.
+            try:
+                self.eswitch.set_link(pci_slot)
+            except Exception:
+                LOG.exception("Failed to disable the link of VF %s",
+                              pci_slot)
+                continue
             del self.link_states[pci_slot]
         if not vnics:
             return
@@ -498,8 +519,7 @@ class MlnxEswitchNeutronAgent(object):
             ports = self.plugin_rpc.get_ports_by_vnic_type_and_host(
                 self.context, portbindings.VNIC_DIRECT, self.conf.host)
         except Exception:
-            # Links that are up stay up, but none is enabled without
-            # knowing that its port is ACTIVE.
+            # Only links that this agent enabled for the same port stay up.
             LOG.exception("Failed to get the ports bound to this host")
             ports = None
         ready = set()
@@ -511,11 +531,12 @@ class MlnxEswitchNeutronAgent(object):
                 ready.add((port['mac_address'].lower(),
                            profile.get('pci_slot')))
         for mac, pci_slot in vnics:
-            up = (mac.lower(), pci_slot) in ready
-            if ports is None and not up:
-                continue
-            if self.link_states.get(pci_slot) == (mac, up):
-                continue
+            if ports is None:
+                up = self.link_states.get(pci_slot) == (mac, True)
+            else:
+                up = (mac.lower(), pci_slot) in ready
+            # Set the link every time, since Nova may have plugged the VF
+            # again, which disables it, without the agent noticing.
             try:
                 self.eswitch.set_link(pci_slot, mac if up else None)
             except Exception:
@@ -524,9 +545,10 @@ class MlnxEswitchNeutronAgent(object):
                                'pci': pci_slot})
                 self.link_states.pop(pci_slot, None)
                 continue
-            LOG.info("%(action)s the link of VF %(pci)s with mac %(mac)s",
-                     {'action': 'Enabled' if up else 'Disabled',
-                      'pci': pci_slot, 'mac': mac})
+            if self.link_states.get(pci_slot) != (mac, up):
+                LOG.info("%(action)s the link of VF %(pci)s with mac %(mac)s",
+                         {'action': 'Enabled' if up else 'Disabled',
+                          'pci': pci_slot, 'mac': mac})
             self.link_states[pci_slot] = (mac, up)
 
     def _port_info_has_changes(self, port_info):

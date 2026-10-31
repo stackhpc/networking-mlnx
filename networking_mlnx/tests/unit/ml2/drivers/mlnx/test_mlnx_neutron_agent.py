@@ -56,6 +56,24 @@ class TestEswichManager(base.BaseTestCase):
             'physnet', 4, '0000:06:00.2')
         self.manager.utils.port_up.assert_not_called()
 
+    def test_port_up_forgets_earlier_entries(self):
+        self.manager.utils = mock.Mock()
+        self.manager.port_up('net-1', 'vlan', 'physnet', 4, 'port-1',
+                             '10:20:30:40:50:60', '0000:06:00.2')
+        # The port moved to another VF, and another port got its old VF.
+        self.manager.port_up('net-1', 'vlan', 'physnet', 4, 'port-1',
+                             '10:20:30:40:50:60', '0000:06:00.3')
+        self.manager.port_up('net-2', 'vlan', 'physnet', 5, 'port-2',
+                             '11:21:31:41:51:61', '0000:06:00.2')
+        self.assertEqual(
+            [{'port_id': 'port-1', 'port_mac': '10:20:30:40:50:60',
+              'pci_slot': '0000:06:00.3'}],
+            self.manager.network_map['net-1']['ports'])
+        self.assertEqual(
+            [{'port_id': 'port-2', 'port_mac': '11:21:31:41:51:61',
+              'pci_slot': '0000:06:00.2'}],
+            self.manager.network_map['net-2']['ports'])
+
     def test_get_port_by_id(self):
         self.manager.network_map = {'net-id': {'ports': [
             {'port_id': 'port-id', 'port_mac': '10:20:30:40:50:60',
@@ -90,12 +108,16 @@ class TestMlnxEswitchRpcCallbacks(base.BaseTestCase):
     def test_binding_activate(self):
         agent = self.rpc_callbacks.agent
         agent.conf.host = 'host1'
+        # The VF changed since the port was configured on this host.
         agent.eswitch.get_port_by_id.return_value = (
             '10:20:30:40:50:60', '0000:05:00.3')
+        agent.eswitch.get_vnics.return_value = {
+            ('10:20:30:40:50:60', '0000:05:00.4'),
+            ('11:21:31:41:51:61', '0000:05:00.3')}
         self.rpc_callbacks.binding_activate('context', port_id='port-id',
                                             host='host1')
         agent.add_port_update.assert_called_once_with(
-            ('10:20:30:40:50:60', '0000:05:00.3'))
+            ('10:20:30:40:50:60', '0000:05:00.4'))
 
     def test_binding_activate_other_host(self):
         agent = self.rpc_callbacks.agent
@@ -407,7 +429,7 @@ class TestEswitchAgent(base.BaseTestCase):
             ports)
         self.agent.eswitch.set_link.reset_mock()
         self.agent._sync_link_states()
-        return {c[0][0]: c[0][1]
+        return {c[0][0]: c[0][1] if len(c[0]) > 1 else None
                 for c in self.agent.eswitch.set_link.call_args_list}
 
     def test_sync_link_states_enables_only_ready_ports(self):
@@ -434,14 +456,24 @@ class TestEswitchAgent(base.BaseTestCase):
             calls = self._sync_link_states([vnic], [port])
             self.assertEqual({self.VNIC_PORT_1[1]: None}, calls)
 
-    def test_sync_link_states_only_changes_links_once(self):
+    def test_sync_link_states_sets_links_every_time(self):
+        # Nova may plug a VF again, which disables its link, between two
+        # iterations.
         vnics = [self.VNIC_PORT_1]
         self._sync_link_states(vnics, [self._port(self.VNIC_PORT_1)])
-        self.assertEqual({}, self._sync_link_states(
-            vnics, [self._port(self.VNIC_PORT_1)]))
+        self.assertEqual({self.VNIC_PORT_1[1]: self.VNIC_PORT_1[0]},
+                         self._sync_link_states(
+                             vnics, [self._port(self.VNIC_PORT_1)]))
         # The port is no longer ACTIVE, for example after a binding change.
         self.assertEqual({self.VNIC_PORT_1[1]: None}, self._sync_link_states(
             vnics, [self._port(self.VNIC_PORT_1, status='DOWN')]))
+
+    def test_sync_link_states_disables_vf_that_is_gone(self):
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+        self.assertEqual({self.VNIC_PORT_1[1]: None},
+                         self._sync_link_states([], []))
+        self.assertEqual({}, self.agent.link_states)
 
     def test_sync_link_states_after_vf_gets_another_port(self):
         pci_slot = self.VNIC_PORT_1[1]
@@ -452,14 +484,17 @@ class TestEswitchAgent(base.BaseTestCase):
         self.assertEqual({pci_slot: vnic[0]}, self._sync_link_states(
             [vnic], [self._port(vnic)]))
 
-    def test_sync_link_states_rpc_failure_enables_nothing(self):
+    def test_sync_link_states_rpc_failure_keeps_only_own_links(self):
         self._sync_link_states([self.VNIC_PORT_1],
                                [self._port(self.VNIC_PORT_1)])
         self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.side_effect = (
             Exception)
+        # VNIC_PORT_2 is a VF that this agent didn't enable, for example
+        # after it restarted, or after Nova failed to plug it.
         calls = self._sync_link_states(
             [self.VNIC_PORT_1, self.VNIC_PORT_2], [])
-        self.assertEqual({}, calls)
+        self.assertEqual({self.VNIC_PORT_1[1]: self.VNIC_PORT_1[0],
+                          self.VNIC_PORT_2[1]: None}, calls)
 
     def test_sync_link_states_retries_after_failure(self):
         self.agent.eswitch.set_link.side_effect = [Exception, None]
@@ -489,3 +524,20 @@ class TestEswitchAgent(base.BaseTestCase):
             self.agent.context, self.VNIC_PORT_2[0], self.agent.agent_id,
             self.agent.conf.host)
         self.assertNotIn(self.VNIC_PORT_1[1], self.agent.link_states)
+
+    def test_process_network_ports_releases_before_configuring(self):
+        # Nova gave a VF to another port within one iteration.
+        port_info = {'current': {self.VNIC_PORT_2}, 'updated': set(),
+                     'added': {(self.VNIC_PORT_2[0], self.VNIC_PORT_1[1])},
+                     'removed': {self.VNIC_PORT_1}}
+        manager = mock.Mock()
+        manager.removed.return_value = False
+        manager.added.return_value = False
+        with mock.patch.object(self.agent, 'treat_devices_removed',
+                               manager.removed), \
+                mock.patch.object(self.agent,
+                                  'treat_devices_added_or_updated',
+                                  manager.added):
+            self.agent.process_network_ports(port_info)
+        self.assertEqual(['removed', 'added'],
+                         [c[0] for c in manager.mock_calls])
