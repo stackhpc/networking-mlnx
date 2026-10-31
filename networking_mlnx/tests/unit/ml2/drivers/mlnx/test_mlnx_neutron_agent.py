@@ -48,6 +48,22 @@ class TestEswichManager(base.BaseTestCase):
         with testtools.ExpectedException(exceptions.MlnxException):
             self.manager.get_port_id_by_pci('no-such-pci')
 
+    def test_port_up_does_not_enable_link(self):
+        self.manager.utils = mock.Mock()
+        self.manager.port_up('net-id', 'vlan', 'physnet', 4, 'port-id',
+                             '10:20:30:40:50:60', '0000:06:00.2')
+        self.manager.utils.set_port_vlan_id.assert_called_once_with(
+            'physnet', 4, '0000:06:00.2')
+        self.manager.utils.port_up.assert_not_called()
+
+    def test_get_port_by_id(self):
+        self.manager.network_map = {'net-id': {'ports': [
+            {'port_id': 'port-id', 'port_mac': '10:20:30:40:50:60',
+             'pci_slot': '0000:06:00.2'}]}}
+        self.assertEqual(('10:20:30:40:50:60', '0000:06:00.2'),
+                         self.manager.get_port_by_id('port-id'))
+        self.assertIsNone(self.manager.get_port_by_id('other-id'))
+
 
 class TestMlnxEswitchRpcCallbacks(base.BaseTestCase):
 
@@ -70,6 +86,23 @@ class TestMlnxEswitchRpcCallbacks(base.BaseTestCase):
         self.rpc_callbacks.port_update('context', port=port)
         add_port_update.assert_called_once_with(
             (port['mac_address'], port['binding:profile']['pci_slot']))
+
+    def test_binding_activate(self):
+        agent = self.rpc_callbacks.agent
+        agent.conf.host = 'host1'
+        agent.eswitch.get_port_by_id.return_value = (
+            '10:20:30:40:50:60', '0000:05:00.3')
+        self.rpc_callbacks.binding_activate('context', port_id='port-id',
+                                            host='host1')
+        agent.add_port_update.assert_called_once_with(
+            ('10:20:30:40:50:60', '0000:05:00.3'))
+
+    def test_binding_activate_other_host(self):
+        agent = self.rpc_callbacks.agent
+        agent.conf.host = 'host1'
+        self.rpc_callbacks.binding_activate('context', port_id='port-id',
+                                            host='host2')
+        agent.add_port_update.assert_not_called()
 
     def test_port_update_no_pci(self):
         port = {
@@ -359,3 +392,100 @@ class TestEswitchAgent(base.BaseTestCase):
             vif_port_set, updated_ports_cache)
         expected_vif_port_set = set([self.VNIC_PORT_1, self.VNIC_PORT_3])
         self.assertEqual(expected_vif_port_set, fixed_vif_ports)
+
+    def _port(self, vnic, status='ACTIVE', host='host1', admin_state_up=True):
+        mac, pci_slot = vnic
+        return {'mac_address': mac, 'status': status,
+                'admin_state_up': admin_state_up,
+                'binding:host_id': host,
+                'binding:profile': {'pci_slot': pci_slot}}
+
+    def _sync_link_states(self, vnics, ports):
+        self.agent.conf.host = 'host1'
+        self.agent.eswitch.get_vnics.return_value = set(vnics)
+        self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.return_value = (
+            ports)
+        self.agent.eswitch.set_link.reset_mock()
+        self.agent._sync_link_states()
+        return {c[0][0]: c[0][1]
+                for c in self.agent.eswitch.set_link.call_args_list}
+
+    def test_sync_link_states_enables_only_ready_ports(self):
+        calls = self._sync_link_states(
+            [self.VNIC_PORT_1, self.VNIC_PORT_2, self.VNIC_PORT_3,
+             self.VNIC_PORT_4, self.VNIC_PORT_5],
+            [self._port(self.VNIC_PORT_1),
+             self._port(self.VNIC_PORT_2, status='DOWN'),
+             self._port(self.VNIC_PORT_3, status='ERROR'),
+             self._port(self.VNIC_PORT_4, host='host2'),
+             self._port(self.VNIC_PORT_5, admin_state_up=False)])
+        self.assertEqual({self.VNIC_PORT_1[1]: self.VNIC_PORT_1[0],
+                          self.VNIC_PORT_2[1]: None,
+                          self.VNIC_PORT_3[1]: None,
+                          self.VNIC_PORT_4[1]: None,
+                          self.VNIC_PORT_5[1]: None}, calls)
+
+    def test_sync_link_states_disables_vf_with_other_guid(self):
+        # The VF still has another port's GUID, or an invalid one.
+        port = self._port(self.VNIC_PORT_1)
+        for vnic in (self.VNIC_PORT_2, self.VNIC_PORT_1_INVALID_MAC):
+            vnic = (vnic[0], self.VNIC_PORT_1[1])
+            self.agent.link_states.clear()
+            calls = self._sync_link_states([vnic], [port])
+            self.assertEqual({self.VNIC_PORT_1[1]: None}, calls)
+
+    def test_sync_link_states_only_changes_links_once(self):
+        vnics = [self.VNIC_PORT_1]
+        self._sync_link_states(vnics, [self._port(self.VNIC_PORT_1)])
+        self.assertEqual({}, self._sync_link_states(
+            vnics, [self._port(self.VNIC_PORT_1)]))
+        # The port is no longer ACTIVE, for example after a binding change.
+        self.assertEqual({self.VNIC_PORT_1[1]: None}, self._sync_link_states(
+            vnics, [self._port(self.VNIC_PORT_1, status='DOWN')]))
+
+    def test_sync_link_states_after_vf_gets_another_port(self):
+        pci_slot = self.VNIC_PORT_1[1]
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+        # Nova plugged the VF for another port, which disabled its link.
+        vnic = (self.VNIC_PORT_2[0], pci_slot)
+        self.assertEqual({pci_slot: vnic[0]}, self._sync_link_states(
+            [vnic], [self._port(vnic)]))
+
+    def test_sync_link_states_rpc_failure_enables_nothing(self):
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+        self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.side_effect = (
+            Exception)
+        calls = self._sync_link_states(
+            [self.VNIC_PORT_1, self.VNIC_PORT_2], [])
+        self.assertEqual({}, calls)
+
+    def test_sync_link_states_retries_after_failure(self):
+        self.agent.eswitch.set_link.side_effect = [Exception, None]
+        vnics = [self.VNIC_PORT_1]
+        self._sync_link_states(vnics, [self._port(self.VNIC_PORT_1)])
+        self.assertNotIn(self.VNIC_PORT_1[1], self.agent.link_states)
+        self.agent.eswitch.set_link.side_effect = None
+        self.assertEqual({self.VNIC_PORT_1[1]: self.VNIC_PORT_1[0]},
+                         self._sync_link_states(
+                             vnics, [self._port(self.VNIC_PORT_1)]))
+
+    def test_treat_devices_added_failure_does_not_report_port_up(self):
+        details = [{'device': mac, 'port_id': 'port-%s' % mac,
+                    'profile': {'pci_slot': pci_slot},
+                    'network_id': 'net-id', 'network_type': 'vlan',
+                    'physical_network': 'physnet', 'segmentation_id': 4,
+                    'admin_state_up': True}
+                   for mac, pci_slot in (self.VNIC_PORT_1, self.VNIC_PORT_2)]
+        self.agent.plugin_rpc.get_devices_details_list.return_value = details
+        self.agent.link_states[self.VNIC_PORT_1[1]] = (
+            self.VNIC_PORT_1[0], True)
+        with mock.patch.object(self.agent, 'treat_vif_port',
+                               side_effect=[Exception, None]):
+            self.assertTrue(self.agent.treat_devices_added_or_updated(
+                [self.VNIC_PORT_1, self.VNIC_PORT_2]))
+        self.agent.plugin_rpc.update_device_up.assert_called_once_with(
+            self.agent.context, self.VNIC_PORT_2[0], self.agent.agent_id,
+            self.agent.conf.host)
+        self.assertNotIn(self.VNIC_PORT_1[1], self.agent.link_states)
