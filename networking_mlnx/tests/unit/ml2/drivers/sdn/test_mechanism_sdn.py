@@ -1442,7 +1442,8 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
                                side_effect=RuntimeError):
             complete, _set_status = self._complete_job(row)
 
-        self.assertEqual(sdn_const.COMPLETED, self._rows()[0].state)
+        # The row is checked again, so that releasing the port is retried.
+        self.assertEqual(sdn_const.MONITORING, self._rows()[0].state)
         self.assertTrue(self._is_blocked(port_id))
         complete.assert_not_called()
 

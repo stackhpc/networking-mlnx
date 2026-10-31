@@ -14,10 +14,13 @@
 
 import unittest.mock as mock
 
+from neutron.db import provisioning_blocks
 from neutron.plugins.ml2 import plugin
+from neutron_lib.callbacks import resources
 from neutron_lib import context as nl_context
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
+import requests
 
 from networking_mlnx.db import db
 from networking_mlnx.journal import dependency_validations
@@ -149,3 +152,39 @@ class TestGuidOrdering(SdnJournalTestBase):
         self.assertEqual(sdn_const.FAILED, post.state)
         set_status.assert_called_once_with(mock.ANY, port_id, 'ERROR')
         self.assertTrue(self._is_blocked(port_id))
+
+
+class TestReleaseBeforeCompleting(SdnJournalTestBase):
+    """A row is only COMPLETED once its port has been released"""
+
+    def _sync_job(self, row):
+        response = self._response(requests.codes.ok,
+                                  jsonutils.dumps({'Status': 'Completed'}))
+        with mock.patch('requests.request', return_value=response):
+            self.thread._sync_progress_rows(self.context)
+
+    def test_failed_release_is_retried(self):
+        port_id, row = self._make_blocked_port()
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+
+        with mock.patch.object(provisioning_blocks,
+                               'remove_provisioning_component',
+                               side_effect=RuntimeError):
+            self._sync_job(row)
+        self.assertEqual(sdn_const.MONITORING, self._rows()[0].state)
+        self.assertTrue(self._is_blocked(port_id))
+
+        self._sync_job(row)
+        self.assertEqual(sdn_const.COMPLETED, self._rows()[0].state)
+        self.assertFalse(self._is_blocked(port_id))
+
+    def test_row_without_port_is_completed(self):
+        port_id, row = self._make_blocked_port()
+        provisioning_blocks.remove_provisioning_component(
+            self.context, port_id, resources.PORT,
+            sdn_const.PROVISIONING_ENTITY)
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+        self._sync_job(row)
+        self.assertEqual(sdn_const.COMPLETED, self._rows()[0].state)

@@ -96,25 +96,51 @@ def _get_blocked_port_id_locked(context, row):
     return _get_blocked_port_id(context, row)
 
 
-def _complete_port_provisioning(context, row):
-    try:
-        with db_api.CONTEXT_WRITER.using(context):
-            port_id = _get_blocked_port_id_locked(context, row)
-            if not port_id:
-                return
+@db_api.retry_if_session_inactive()
+def _release_port(context, row):
+    """Remove the provisioning block that the row holds, if any
+
+    :returns: the ID of the port released, or None
+    """
+    with db_api.CONTEXT_WRITER.using(context):
+        port_id = _get_blocked_port_id_locked(context, row)
+        if port_id:
             provisioning_blocks.remove_provisioning_component(
                 context, port_id, resources.PORT,
                 sdn_const.PROVISIONING_ENTITY)
-        LOG.info("SDN Controller added port %s to its partition key",
-                 port_id)
-        # Nothing is left to remove, but this makes the port ACTIVE if no
-        # other provisioning blocks remain.
-        provisioning_blocks.provisioning_complete(
-            context, port_id, resources.PORT, sdn_const.PROVISIONING_ENTITY)
+    return port_id
+
+
+@db_api.retry_if_session_inactive()
+def _set_port_provisioned(context, port_id):
+    # Nothing is left to remove, but this makes the port ACTIVE if no
+    # other provisioning blocks remain.
+    provisioning_blocks.provisioning_complete(
+        context, port_id, resources.PORT, sdn_const.PROVISIONING_ENTITY)
+
+
+def _complete_port_provisioning(context, row):
+    """Release the port that the row holds, once its job has completed
+
+    :returns: False if the port couldn't be released, so that the caller
+              tries again later, otherwise True.
+    """
+    try:
+        port_id = _release_port(context, row)
     except Exception:
-        # The port stays DOWN, so Nova fails the boot when it times out.
-        LOG.exception("Failed to complete provisioning of port %s",
-                      row.object_uuid)
+        # The port stays DOWN until this is tried again.
+        LOG.exception("Failed to release port %s", row.object_uuid)
+        return False
+    if not port_id:
+        return True
+    LOG.info("SDN Controller added port %s to its partition key", port_id)
+    try:
+        _set_port_provisioned(context, port_id)
+    except Exception:
+        # The block is gone, so trying again would find nothing to release.
+        # The port stays DOWN, so Nova and Ironic fail when they time out.
+        LOG.exception("Failed to make port %s ACTIVE", port_id)
+    return True
 
 
 def _fail_port_provisioning(context, row):
@@ -377,9 +403,12 @@ class SdnJournalThread(object):
                     try:
                         job_status = response.json().get('Status')
                         if job_status == 'Completed':
-                            db.update_db_row_state(
-                                context, row, sdn_const.COMPLETED)
-                            _complete_port_provisioning(context, row)
+                            # Keep monitoring the row until its port has
+                            # been released, so that a failure to release
+                            # it is retried.
+                            if _complete_port_provisioning(context, row):
+                                db.update_db_row_state(
+                                    context, row, sdn_const.COMPLETED)
                             continue
                         if job_status in ("Pending", "Running"):
                             LOG.debug("SDN Controller Job id %(job_id)s is "
