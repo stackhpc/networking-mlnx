@@ -22,10 +22,12 @@ from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as neutron_const
 from neutron_lib import context as nl_context
+from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
 from oslo_log import log
 
+from networking_mlnx._i18n import _
 from networking_mlnx.db import schema
 from networking_mlnx.journal import cleanup
 from networking_mlnx.journal import journal
@@ -192,7 +194,7 @@ class SDNMechanismDriver(api.MechanismDriver):
         # Instances' direct ports are sent when the binding is committed
         # instead, see update_port_precommit().
         if (self._is_send_bind_port(port_dic) and
-                not self._is_direct_compute_port(port_dic)):
+                not self._is_direct_port(port_dic)):
             port_dic[NETWORK_QOS_POLICY] = (
                 self._get_network_qos_policy(context, port_dic['network_id']))
             SDNMechanismDriver._record_in_journal(
@@ -256,27 +258,30 @@ class SDNMechanismDriver(api.MechanismDriver):
     def create_port_precommit(self, context):
         if not self._is_allowed_physical_networks(context.network):
             return
+        self._check_client_id_change(context)
         port_dic = context.current
         port_dic[NETWORK_QOS_POLICY] = (
             self._get_network_qos_policy(context, port_dic['network_id']))
 
         vnic_type = port_dic[portbindings.VNIC_TYPE]
+        # An InfiniBand port is sent when its binding is committed.
         if (vnic_type == portbindings.VNIC_BAREMETAL and
-            (self._get_client_id_from_port(port_dic) or
-             self._get_local_link_information(port_dic))):
+                not self._is_ib_baremetal_port(port_dic) and
+                self._get_local_link_information(port_dic)):
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.POST, port_dic)
 
     def update_port_precommit(self, context):
         if not self._is_allowed_physical_networks(context.network):
             return
+        self._check_client_id_change(context, context.original)
         port_dic = context.current
         orig_port_dict = context.original
         port_dic[NETWORK_QOS_POLICY] = (
             self._get_network_qos_policy(context, port_dic['network_id']))
 
         vnic_type = port_dic[portbindings.VNIC_TYPE]
-        if (self._is_direct_compute_port(port_dic) and
+        if (self._is_direct_port(port_dic) and
                 self._is_binding_commit(context)):
             self._send_bound_port(context)
             return
@@ -401,11 +406,29 @@ class SDNMechanismDriver(api.MechanismDriver):
                  device_owner in self.supported_device_owners))
 
     @staticmethod
-    def _is_direct_compute_port(port):
-        device_owner = port['device_owner'] or ''
-        return (port[portbindings.VNIC_TYPE] == portbindings.VNIC_DIRECT and
-                device_owner.lower().startswith(
-                    neutron_const.DEVICE_OWNER_COMPUTE_PREFIX))
+    def _is_direct_port(port):
+        return port[portbindings.VNIC_TYPE] == portbindings.VNIC_DIRECT
+
+    def _check_client_id_change(self, context, original=None):
+        """Only let administrators set a port's DHCP client ID
+
+        The SDN controller takes an InfiniBand port's GUID from its client
+        ID, so a project that could set it could have the controller add
+        another port's GUID to its network's partition key. Nova, Ironic and
+        the mlnx_infiniband mechanism driver set it as administrators.
+        """
+        port = context.current
+        if (context._plugin_context.is_admin or
+                port[portbindings.VNIC_TYPE] not in (
+                    portbindings.VNIC_DIRECT, portbindings.VNIC_BAREMETAL)):
+            return
+        orig_client_id = (self._get_client_id_from_port(original)
+                          if original else None)
+        if self._get_client_id_from_port(port) != orig_client_id:
+            raise n_exc.InvalidInput(error_message=_(
+                "Only an administrator can set the DHCP client ID of a "
+                "direct or bare metal port, which identifies its "
+                "InfiniBand GUID."))
 
     def _is_ib_baremetal_port(self, port):
         """Check if the port is a bare metal node's InfiniBand port"""

@@ -24,6 +24,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context as nl_context
 from neutron_lib.db import api as db_api
+from neutron_lib import exceptions as n_exc
 from oslo_config import cfg
 from oslo_config import fixture as fixture_config
 from oslo_serialization import jsonutils
@@ -880,15 +881,17 @@ class SdnDriverTestCase(SdnConfigBase):
 
     def test_create_baremetal_port_with_numeric_client_id(self):
         # Ironic sets the client ID option by number, which Neutron returns
-        # as the string '61'.
-        context = self._get_mock_port_operation_context()
+        # as the string '61'. The port is sent when its binding is committed.
+        context = self._get_mock_commit_operation_context()
         context.current.update({
             'binding:vnic_type': portbindings.VNIC_BAREMETAL,
             'binding:profile': {},
             'extra_dhcp_opts': [{'opt_name': '61', 'opt_value': CLIENT_ID,
                                  'ip_version': 4}]})
+        context.original = dict(context.current)
+        context.vif_type = portbindings.VIF_TYPE_OTHER
 
-        self.mech.create_port_precommit(context)
+        self.mech.update_port_precommit(context)
 
         row = db.get_oldest_pending_db_row_with_lock(self.context)
         self.assertEqual(sdn_const.POST, row['operation'])
@@ -1278,6 +1281,65 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         self.assertEqual([sdn_const.DELETE],
                          [r.operation for r in self._rows()])
         remove_block.assert_called_once()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_blocks_non_compute_port(self, add_block):
+        context = self._get_mock_commit_operation_context()
+        context.current['device_owner'] = 'compute-ish:service'
+        self.mech.update_port_precommit(context)
+
+        self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+        add_block.assert_called_once()
+
+    def _client_id_context(self, vnic_type, client_id, orig_client_id=None,
+                           admin=False):
+        context = self._get_mock_port_operation_context()
+        context.current['binding:vnic_type'] = vnic_type
+        context.original = dict(context.current)
+        for port, value in ((context.current, client_id),
+                            (context.original, orig_client_id)):
+            port['extra_dhcp_opts'] = (
+                [{'opt_name': 'client-id', 'opt_value': value}]
+                if value else [])
+        if not admin:
+            context._plugin_context = nl_context.Context('user', 'project')
+        return context
+
+    def test_project_cant_set_client_id(self):
+        for vnic_type in (portbindings.VNIC_DIRECT,
+                          portbindings.VNIC_BAREMETAL):
+            context = self._client_id_context(vnic_type, CLIENT_ID)
+            self.assertRaises(n_exc.InvalidInput,
+                              self.mech.create_port_precommit, context)
+            self.assertRaises(n_exc.InvalidInput,
+                              self.mech.update_port_precommit, context)
+            context = self._client_id_context(vnic_type, CLIENT_ID,
+                                              orig_client_id='20:00')
+            self.assertRaises(n_exc.InvalidInput,
+                              self.mech.update_port_precommit, context)
+
+    def test_project_can_update_port_keeping_client_id(self):
+        context = self._client_id_context(portbindings.VNIC_DIRECT,
+                                          CLIENT_ID, orig_client_id=CLIENT_ID)
+        self.mech.update_port_precommit(context)
+
+    def test_project_can_set_client_id_of_normal_port(self):
+        context = self._client_id_context(portbindings.VNIC_NORMAL,
+                                          CLIENT_ID)
+        self.mech.create_port_precommit(context)
+
+    def test_admin_can_set_client_id(self):
+        context = self._client_id_context(portbindings.VNIC_BAREMETAL,
+                                          CLIENT_ID, admin=True)
+        self.mech.create_port_precommit(context)
+        self.mech.update_port_precommit(context)
+
+    def test_create_ib_baremetal_port_is_not_sent(self):
+        # It is sent when its binding is committed.
+        context = self._client_id_context(portbindings.VNIC_BAREMETAL,
+                                          CLIENT_ID, admin=True)
+        self.mech.create_port_precommit(context)
+        self.assertEqual([], self._rows())
 
     @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
     def test_unbind_removes_block(self, remove_block):
