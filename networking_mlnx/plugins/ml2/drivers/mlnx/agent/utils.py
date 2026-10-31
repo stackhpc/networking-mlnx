@@ -122,13 +122,17 @@ class EswitchUtils(object):
                                    'interface': phy_interface})
             self.send_msg(msg)
 
-    def port_up(self, fabric, pci_slot):
+    def port_up(self, fabric, pci_slot, mac=None):
         LOG.debug("Port Up for %(pci_slot)s on fabric %(fabric)s",
                   {'pci_slot': pci_slot, 'fabric': fabric})
-        msg = jsonutils.dumps({'action': 'port_up',
-                               'fabric': fabric,
-                               'ref_by': 'pci_slot',
-                               'pci_slot': pci_slot})
+        msg = {'action': 'port_up',
+               'fabric': fabric,
+               'ref_by': 'pci_slot',
+               'pci_slot': pci_slot}
+        if mac:
+            # eswitchd only enables the link if the VF has this mac's GUID.
+            msg['mac'] = mac
+        msg = jsonutils.dumps(msg)
         self.send_msg(msg)
 
     def port_down(self, fabric, pci_slot):

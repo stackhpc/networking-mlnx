@@ -322,6 +322,16 @@ class ESwitchManager(object):
         if embedded_switch:
             embedded_switch.set_device_ib_mac(pci_slot, mac)
 
+    def get_device_ib_mac(self, pci_slot):
+        """Get the mac address of an assigned VF, derived from its GUID
+
+        :param pci_slot: VF pci address
+        :return: MAC address, or None if the VF is not assigned
+        """
+        embedded_switch = self._get_emb_eswitch(pci_slot)
+        if embedded_switch:
+            return embedded_switch.get_device_ib_mac(pci_slot)
+
     def config_vlan_ib(self, pci_slot, vlan):
         """Set VF IB VLAN (Set Infiniband PKEY for VF)
 
