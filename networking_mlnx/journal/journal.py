@@ -243,6 +243,19 @@ class SdnJournalThread(object):
                 skipped_row_ids.add(row.id)
                 continue
 
+            if (row.object_type == sdn_const.PORT and
+                    row.operation == sdn_const.POST and
+                    _get_blocked_port_id(context, row) and
+                    db.check_for_failed_delete_of_same_guid(context, row)):
+                # The GUID may still be in the partition key of the port
+                # whose deletion failed, so this port must not be used.
+                LOG.error("Not adding port %s to its partition key: the SDN "
+                          "Controller failed to delete another port with "
+                          "the same GUID, which may still be in another "
+                          "partition", row.object_uuid)
+                self._fail_row(context, row)
+                continue
+
             LOG.info("Syncing %(operation)s %(type)s %(uuid)s",
                      {'operation': row.operation, 'type': row.object_type,
                       'uuid': row.object_uuid})

@@ -1,0 +1,13 @@
+---
+security:
+  - |
+    The ``mlnx_sdn_assist`` journal now sends a port's ``POST`` to the SDN
+    controller only once the deletion of any other port with the same GUID
+    has finished. A bare metal node's provisioning and tenant ports have the
+    same DHCP client ID, and ports with the same MAC address on different
+    networks give virtual functions the same GUID. Previously a tenant port
+    could be added to its partition key, and made ``ACTIVE``, while the
+    controller was still removing, or had failed to remove, the same GUID
+    from another partition. If the controller failed to delete the other
+    port, an instance's or bare metal node's port that is held ``DOWN`` is
+    now set to ``ERROR`` instead of being sent.

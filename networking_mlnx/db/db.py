@@ -149,6 +149,62 @@ def lock_port_binding(context, port_id):
     ).first()
 
 
+def get_port_guid_identity(port):
+    """Return what identifies a port's GUID on the fabric, or None
+
+    A bare metal node's InfiniBand port is identified by its DHCP client
+    ID, which contains its GUID. A virtual function's GUID is derived from
+    its port's MAC address. Different ports can have the same one: a bare
+    metal node's provisioning and tenant ports, or ports with the same MAC
+    address on different networks.
+    """
+    if port.get('binding:vnic_type') == 'baremetal':
+        for opt in port.get('extra_dhcp_opts') or ():
+            # Neutron stores option names as strings, so the client ID
+            # option set by its number (as Ironic does) is '61'.
+            if (isinstance(opt, dict) and
+                    str(opt.get('opt_name')) in ('client-id', '61') and
+                    opt.get('opt_value')):
+                return opt['opt_value'].lower()
+    mac = port.get('mac_address')
+    return mac.lower() if mac else None
+
+
+def _get_port_deletes_with_same_guid(context, row, states):
+    identity = get_port_guid_identity(jsonutils.loads(row.data or '{}'))
+    if not identity:
+        return []
+    rows = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.object_type == sdn_const.PORT,
+        sdn_journal_db.SdnJournal.operation == sdn_const.DELETE,
+        sdn_journal_db.SdnJournal.state.in_(states),
+        sdn_journal_db.SdnJournal.object_uuid != row.object_uuid).all()
+    return [r for r in rows
+            if get_port_guid_identity(jsonutils.loads(r.data or '{}')) ==
+            identity]
+
+
+@db_api.CONTEXT_READER
+def check_for_unfinished_delete_of_same_guid(context, row):
+    """Check if another port with the row's GUID is still being deleted
+
+    Until the controller has deleted it, the GUID can still be in the other
+    port's partition key.
+    """
+    return bool(_get_port_deletes_with_same_guid(
+        context, row, _UNFINISHED_STATES))
+
+
+@db_api.CONTEXT_READER
+def check_for_failed_delete_of_same_guid(context, row):
+    """Check if the controller failed to delete a port with the row's GUID
+
+    The GUID may then still be in the other port's partition key.
+    """
+    return bool(_get_port_deletes_with_same_guid(
+        context, row, (sdn_const.FAILED,)))
+
+
 @db_api.CONTEXT_READER
 def port_has_provisioning_block(context, port_id, entity):
     q = context.session.query(pb_model.ProvisioningBlock).join(

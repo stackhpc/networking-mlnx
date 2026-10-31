@@ -65,6 +65,11 @@ def validate_port_operation(context, row):
     if (row.operation == sdn_const.POST and
             db.check_for_unfinished_delete_not_newer(context, row)):
         return False
+    # Another port with the same GUID, for example a bare metal node's
+    # provisioning port, must leave its partition before this one is added.
+    if (row.operation == sdn_const.POST and
+            db.check_for_unfinished_delete_of_same_guid(context, row)):
+        return False
     return _is_valid_operation(context, row)
 
 
