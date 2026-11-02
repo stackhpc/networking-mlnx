@@ -261,6 +261,12 @@ its network's partition key (pkey):
   segments. It doesn't bind a port to any segment if another port with the
   same MAC address, and so the same GUID, is bound as ``ib_hostdev``.
 
+``mlnx_sdn_assist`` only sends a network's ports while every segment of the
+network is on a physical network that it syncs, so it doesn't let a network
+have segments both on synced physical networks and on others. Networks that
+already mix them, from before this check, aren't synced; their ports were
+never sent, or stopped being sent, so check for them after upgrading.
+
 Ports on flat networks use the default partition, so all flat networks share
 it.
 
@@ -282,9 +288,6 @@ What the deployment has to provide:
   overridden by a node's ``driver_info['fail_on_binding_failure']``. A port in
   ``ERROR`` fails the deployment when Ironic's wait for the port times out,
   unless Ironic fails early on ``ERROR`` ports.
-* Adding a segment on a physical network that ``mlnx_sdn_assist`` doesn't
-  sync to a network makes it ignore the network's ports from then on,
-  including their deletion. Don't.
 
 A port only becomes ``ACTIVE``, and so an instance only gets InfiniBand
 access, once nothing else holds it either, including a DHCP agent that hosts

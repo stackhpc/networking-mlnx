@@ -16,9 +16,12 @@ import functools
 
 
 from neutron.db import provisioning_blocks
+from neutron.objects import network as network_obj
 from neutron.objects.qos import policy as policy_object
 from neutron_lib.api.definitions import extra_dhcp_opt as edo_ext
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as neutron_const
 from neutron_lib import context as nl_context
@@ -106,6 +109,36 @@ class SDNMechanismDriver(api.MechanismDriver):
         self.bind_normal_ports = cfg.CONF.sdn.bind_normal_ports
         self.bind_normal_ports_physnets = (
             cfg.CONF.sdn.bind_normal_ports_physnets)
+        registry.subscribe(self._check_new_segment, resources.SEGMENT,
+                           events.PRECOMMIT_CREATE)
+
+    def _check_new_segment(self, resource, event, trigger, payload):
+        """Refuse a segment that would mix synced and unsynced physnets
+
+        Ports are only sent to the SDN controller while every segment of
+        their network is on a synced physical network. A segment on another
+        physical network, added to a network that is synced, would stop
+        its ports from being sent, including their deletion, which would
+        leave their GUIDs in its partition key. So a network's static
+        segments must all be on synced physical networks, or none of them.
+        """
+        segment = payload.latest_state
+        if segment.is_dynamic or not self._is_sdn_sync_enabled():
+            return
+        synced = self._is_allowed_physical_network(segment.physical_network)
+        other_segments = network_obj.NetworkSegment.get_objects(
+            payload.context, network_id=segment.network_id, is_dynamic=False)
+        if any(other.id != segment.id and
+               self._is_allowed_physical_network(
+                   other.physical_network) != synced
+               for other in other_segments):
+            raise n_exc.InvalidInput(error_message=_(
+                "Network %(network)s can't have segments both on physical "
+                "networks that are synced to the SDN controller and on "
+                "others, such as %(physnet)s") %
+                {'network': segment.network_id,
+                 'physnet': segment.physical_network or
+                 segment.network_type})
 
     @staticmethod
     def _check_physnet_confs():

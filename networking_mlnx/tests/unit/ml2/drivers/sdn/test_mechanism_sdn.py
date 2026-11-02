@@ -15,11 +15,15 @@ import datetime
 import unittest.mock as mock
 
 from neutron.db import provisioning_blocks
+from neutron.objects import network as network_obj
 from neutron.plugins.ml2 import models as ml2_models
 from neutron.plugins.ml2 import plugin
 from neutron.tests.unit.plugins.ml2 import test_plugin
 from neutron.tests.unit import testlib_api
 from neutron_lib.api.definitions import portbindings
+from neutron_lib.callbacks import events
+from neutron_lib.callbacks import exceptions
+from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context as nl_context
@@ -1677,3 +1681,100 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         set_status = self._sync_pending(
             self._response(requests.codes.service_unavailable))
         self._assert_port_failed(port_id, set_status)
+
+
+class SdnSegmentCheckTestCase(SdnConfigBase):
+    """Segments that would stop a network from being synced are refused"""
+
+    def setUp(self):
+        super(SdnSegmentCheckTestCase, self).setUp()
+        self.context = nl_context.get_admin_context()
+        mock.patch.object(journal.SdnJournalThread,
+                          'start_sync_thread').start()
+        mock.patch.object(journal.SdnJournalThread,
+                          '_start_sync_timer').start()
+        self.conf.set_override('physical_networks', ['physnet1'],
+                               sdn_const.GROUP_OPT)
+        self.mech = sdn_mech_driver.SDNMechanismDriver()
+        self.mech.initialize()
+        self.network_id = self._make_network(
+            self.fmt, 'net', True)['network']['id']
+        # Start from no segments, rather than the test plugin's local one.
+        network_obj.NetworkSegment.delete_objects(
+            self.context, network_id=self.network_id)
+
+    def _segment(self, physical_network, segmentation_id, is_dynamic=False,
+                 network_type=constants.TYPE_VLAN):
+        segment = network_obj.NetworkSegment(
+            self.context, id=uuidutils.generate_uuid(),
+            network_id=self.network_id,
+            network_type=network_type,
+            physical_network=physical_network,
+            segmentation_id=segmentation_id, is_dynamic=is_dynamic,
+            segment_index=segmentation_id)
+        segment.create()
+        return segment
+
+    def _check(self, segment):
+        payload = events.DBEventPayload(self.context, resource_id=segment.id,
+                                        states=(segment,))
+        self.mech._check_new_segment(resources.SEGMENT,
+                                     events.PRECOMMIT_CREATE, None, payload)
+
+    def test_unsynced_segment_on_synced_network_is_refused(self):
+        self._segment('physnet1', 10)
+        self.assertRaises(n_exc.InvalidInput, self._check,
+                          self._segment('physnet2', 11))
+
+    def test_synced_segment_on_synced_network_is_allowed(self):
+        self._segment('physnet1', 10)
+        self._check(self._segment('physnet1', 11))
+
+    def test_unsynced_segment_on_unsynced_network_is_allowed(self):
+        self._segment('physnet2', 10)
+        self._check(self._segment('physnet3', 11))
+
+    def test_synced_segment_on_unsynced_network_is_refused(self):
+        # Whichever order the segments of a network are created in.
+        self._segment('physnet2', 10)
+        self.assertRaises(n_exc.InvalidInput, self._check,
+                          self._segment('physnet1', 11))
+
+    def test_first_segment_is_allowed(self):
+        for physical_network in ('physnet1', 'physnet2'):
+            self._check(self._segment(physical_network, 10))
+            network_obj.NetworkSegment.delete_objects(
+                self.context, network_id=self.network_id)
+
+    def test_segment_without_physnet_on_synced_network_is_refused(self):
+        self._segment('physnet1', 10)
+        segment = self._segment(None, 11, network_type='vxlan')
+        e = self.assertRaises(n_exc.InvalidInput, self._check, segment)
+        self.assertIn('such as vxlan', str(e))
+
+    def test_any_segment_is_allowed_when_all_physnets_are_synced(self):
+        self.conf.set_override('physical_networks', ['*'],
+                               sdn_const.GROUP_OPT)
+        self.mech = sdn_mech_driver.SDNMechanismDriver()
+        self.mech.initialize()
+        self._segment('physnet1', 10)
+        self._check(self._segment('physnet2', 11))
+
+    def test_dynamic_segment_is_allowed(self):
+        self._segment('physnet1', 10)
+        self._check(self._segment('physnet2', 11, is_dynamic=True))
+
+    def test_any_segment_is_allowed_without_sync(self):
+        self.conf.set_override('sync_enabled', False, sdn_const.GROUP_OPT)
+        self._segment('physnet1', 10)
+        self._check(self._segment('physnet2', 11))
+
+    def test_check_is_subscribed(self):
+        self._segment('physnet1', 10)
+        segment = self._segment('physnet2', 11)
+        self.assertRaises(
+            exceptions.CallbackFailure, registry.publish,
+            resources.SEGMENT, events.PRECOMMIT_CREATE, self,
+            payload=events.DBEventPayload(self.context,
+                                          resource_id=segment.id,
+                                          states=(segment,)))
