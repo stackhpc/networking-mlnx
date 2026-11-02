@@ -84,6 +84,13 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
 
     def setUp(self):
         super(SdnMechanismConfigTests, self).setUp()
+        # Creating the plugin initialises the driver, which would otherwise
+        # start a sync thread and timer that outlive the test and sync the
+        # journal in the middle of later tests.
+        mock.patch.object(journal.SdnJournalThread,
+                          'start_sync_thread').start()
+        mock.patch.object(journal.SdnJournalThread,
+                          '_start_sync_timer').start()
         self.mech = sdn_mech_driver.SDNMechanismDriver()
         self.conf_fixture = self.useFixture(fixture_config.Config())
         self.conf = self.conf_fixture.conf
