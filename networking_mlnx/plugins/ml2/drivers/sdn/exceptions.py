@@ -21,6 +21,11 @@ class SDNConnectionError(exc.NeutronException):
     message = _("Failed to send request %(msg)s")
 
 
+class SDNUnreachableError(SDNConnectionError):
+    """The request got no answer: the controller may not have seen it."""
+    message = _("SDN controller unreachable: %(msg)s")
+
+
 class SDNRequestError(exc.NeutronException):
     message = _("Request rejected by the SDN controller: %(msg)s")
 

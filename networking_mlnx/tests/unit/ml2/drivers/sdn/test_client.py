@@ -214,6 +214,14 @@ class TestClient(base.TestCase):
                               response, sdn_const.POST)
         self.assertLess(len(str(e)), 1000)
 
+    def test_request_connection_failure(self):
+        for error in (requests.exceptions.ConnectionError,
+                      requests.exceptions.Timeout):
+            with mock.patch('requests.request', side_effect=error):
+                self.assertRaises(exceptions.SDNUnreachableError,
+                                  self.client.request, sdn_const.GET,
+                                  self.url)
+
     def test_check_response_retryable(self):
         for status_code in (401, 403, 404, 409, 429, 500, 503):
             self.assertRaises(exceptions.SDNConnectionError,
