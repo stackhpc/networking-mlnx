@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    ``neutron-mlnx-agent`` no longer stops processing ports when it fails to
+    get the virtual functions from ``eswitchd``, for example when
+    ``eswitchd`` reports an error. It now tries again after the polling
+    interval, and keeps the port updates it received meanwhile. Previously
+    its main loop stopped while the agent was still reported as alive.

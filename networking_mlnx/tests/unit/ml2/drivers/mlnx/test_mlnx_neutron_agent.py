@@ -332,6 +332,41 @@ class TestEswitchAgent(base.BaseTestCase):
                                return_value=vif_port_set):
             return self.agent.scan_ports(previous, sync)
 
+    def test_scan_ports_keeps_updates_when_get_vnics_fails(self):
+        self.agent.updated_ports = {self.VNIC_PORT_1}
+        self.agent.eswitch.get_vnics.side_effect = exceptions.OperationFailed(
+            err_msg='failed')
+        previous = dict(current=set(), added=set(), removed=set(),
+                        updated=set())
+        self.assertRaises(exceptions.OperationFailed,
+                          self.agent.scan_ports, previous, False)
+        self.assertEqual({self.VNIC_PORT_1}, self.agent.updated_ports)
+
+    def test_run_survives_scan_failure(self):
+        class StopLoop(BaseException):
+            pass
+
+        scans = []
+
+        def scan_ports(previous, sync):
+            scans.append(sync)
+            if len(scans) == 2:
+                raise exceptions.OperationFailed(err_msg='failed')
+            if len(scans) == 3:
+                raise StopLoop()
+            return previous
+
+        with mock.patch.object(self.agent, 'scan_ports',
+                               side_effect=scan_ports), \
+                mock.patch.object(self.agent, '_sync_link_states'), \
+                mock.patch.object(mlnx_eswitch_neutron_agent.time,
+                                  'sleep') as sleep:
+            self.assertRaises(StopLoop, self.agent.run)
+        # After the failed scan, the loop waits, then scans again,
+        # resyncing with the server.
+        sleep.assert_any_call(self.agent._polling_interval)
+        self.assertEqual([True, False, True], scans)
+
     def test_scan_ports_return_current_for_unchanged_ports(self):
         vif_port_set = set([self.VNIC_PORT_1, self.VNIC_PORT_2])
         previous = dict(

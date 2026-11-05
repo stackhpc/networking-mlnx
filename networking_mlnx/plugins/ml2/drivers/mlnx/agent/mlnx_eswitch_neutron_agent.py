@@ -360,8 +360,14 @@ class MlnxEswitchNeutronAgent(object):
         with self._updated_ports_lock:
             updated_ports = self.updated_ports
             self.updated_ports = set()
-        cur_ports = self.fix_eswitchd_vnic_macs(self.eswitch.get_vnics(),
-                                                self.port_pci_to_mac_cache)
+        try:
+            cur_ports = self.fix_eswitchd_vnic_macs(
+                self.eswitch.get_vnics(), self.port_pci_to_mac_cache)
+        except Exception:
+            # Keep the updates for the next iteration.
+            with self._updated_ports_lock:
+                self.updated_ports |= updated_ports
+            raise
         port_info = {'current': cur_ports}
         if sync:
             # Either it's the first iteration or previous iteration had
@@ -571,6 +577,13 @@ class MlnxEswitchNeutronAgent(object):
                 LOG.exception("Request timeout in agent event loop "
                               "eSwitchD is not responding - exiting...")
                 sync = True
+                continue
+            except Exception:
+                # Don't let the loop die while the agent still reports
+                # itself alive. Try again after the polling interval.
+                LOG.exception("Failed to get the VFs from eSwitchD")
+                sync = True
+                time.sleep(self._polling_interval)
                 continue
             if sync:
                 LOG.info("Agent out of sync with plugin!")
