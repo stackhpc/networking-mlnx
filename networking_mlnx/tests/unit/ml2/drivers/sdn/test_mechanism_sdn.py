@@ -1308,6 +1308,8 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         context.network.network_segments = segments
         context.segments_to_bind = segments
         self.mech.bind_port(context)
+        if not context.set_binding.called:
+            return None
         return context.set_binding.call_args[0][3]
 
     def test_bind_ib_baremetal_port_on_vlan_leaves_it_down(self):
@@ -1317,9 +1319,13 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         self.assertEqual(constants.PORT_STATUS_ACTIVE,
                          self._bind_baremetal(net_type=constants.TYPE_FLAT))
 
-    def test_bind_ethernet_baremetal_port_makes_it_active(self):
-        self.assertEqual(constants.PORT_STATUS_ACTIVE,
-                         self._bind_baremetal(client_id=None))
+    def test_ethernet_baremetal_port_is_not_bound(self):
+        # Only InfiniBand ports, which have a client ID, are bound, and left
+        # to other drivers otherwise.
+        context = self._baremetal(self._get_mock_bind_operation_context(),
+                                  client_id=None)
+        self.mech.bind_port(context)
+        context.set_binding.assert_not_called()
 
     def test_host_update_of_ib_baremetal_port_waits_for_binding(self):
         # Ironic sets the host, client-id and local link information in one

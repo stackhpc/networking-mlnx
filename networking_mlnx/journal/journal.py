@@ -13,7 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import re
 import threading
 
 from neutron.db import provisioning_blocks
@@ -28,7 +27,6 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 import requests
-from six.moves import html_parser
 
 from networking_mlnx.db import db
 from networking_mlnx.journal import dependency_validations
@@ -307,21 +305,8 @@ class SdnJournalThread(object):
                     # update in progress and job_id
                     job_id = None
                     try:
-                        try:
-                            job_id = response.json()
-                        except ValueError:
-                            # Note(moshele) workaround for NEO
-                            # because for POST port it return html
-                            # and not json
-                            parser = html_parser.HTMLParser()
-                            parser.feed(response.text)
-                            parser.handle_starttag('a', [])
-                            url = parser.get_starttag_text()
-                            match = re.match(
-                                r'<a href="([a-zA-Z0-9\/]+)">', url)
-                            if match:
-                                job_id = match.group(1)
-                    except Exception as e:
+                        job_id = response.json()
+                    except ValueError as e:
                         LOG.error("Failed to extract job_id %s", e)
 
                     if job_id:

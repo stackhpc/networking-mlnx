@@ -282,26 +282,10 @@ class SDNMechanismDriver(api.MechanismDriver):
                 dhcp_opt['opt_name'] = new_opt_name
                 return
 
-    def _get_local_link_information(self, port):
-        binding_profile = port.get('binding:profile')
-        if binding_profile:
-            return binding_profile.get('local_link_information')
-
     def create_port_precommit(self, context):
         if not self._is_allowed_physical_networks(context.network):
             return
         self._check_client_id_change(context)
-        port_dic = context.current
-        port_dic[NETWORK_QOS_POLICY] = (
-            self._get_network_qos_policy(context, port_dic['network_id']))
-
-        vnic_type = port_dic[portbindings.VNIC_TYPE]
-        # An InfiniBand port is sent when its binding is committed.
-        if (vnic_type == portbindings.VNIC_BAREMETAL and
-                not self._is_ib_baremetal_port(port_dic) and
-                self._get_local_link_information(port_dic)):
-            SDNMechanismDriver._record_in_journal(
-                context, sdn_const.PORT, sdn_const.POST, port_dic)
 
     def update_port_precommit(self, context):
         if not self._is_allowed_physical_networks(context.network):
@@ -329,20 +313,6 @@ class SDNMechanismDriver(api.MechanismDriver):
         # Check if we get a client id after binding the bare metal port,
         # and report the port to sdn controller
         if vnic_type == portbindings.VNIC_BAREMETAL:
-            # Ethernet Case
-            link__info = self._get_local_link_information(port_dic)
-            orig_link_info = self._get_local_link_information(orig_port_dict)
-            if link__info != orig_link_info and link__info:
-                SDNMechanismDriver._record_in_journal(
-                    context, sdn_const.PORT, sdn_const.POST, port_dic)
-                return
-            elif (orig_link_info and orig_port_dict[portbindings.HOST_ID] and
-                    not port_dic[portbindings.HOST_ID]):
-                SDNMechanismDriver._record_in_journal(
-                    context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
-                self._remove_pkey_block(context)
-                return
-            # InfiniBand Case
             current_client_id = self._get_client_id_from_port(port_dic)
             orig_client_id = self._get_client_id_from_port(orig_port_dict)
             if current_client_id != orig_client_id:
@@ -566,6 +536,10 @@ class SDNMechanismDriver(api.MechanismDriver):
         """
         vnic_type = port[portbindings.VNIC_TYPE]
         if vnic_type in self.supported_vnic_types:
+            if not self._get_client_id_from_port(port):
+                # Only InfiniBand ports, which have a DHCP client ID, can be
+                # put in a partition by the SDN controller.
+                return False
             if (segment[api.NETWORK_TYPE] != neutron_const.TYPE_FLAT and
                     not self._is_sdn_sync_enabled()):
                 # Don't bind to non-flat networks if not syncing to an SDN

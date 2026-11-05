@@ -1,0 +1,15 @@
+---
+upgrade:
+  - |
+    Support for NVIDIA (Mellanox) NEO as the SDN controller of
+    ``mlnx_sdn_assist`` has been removed. NEO has reached end of life; see
+    `EOL notice LCR-000668
+    <https://network.nvidia.com/pdf/eol/LCR-000668.pdf>`_. UFM is the only
+    supported controller.
+  - |
+    ``mlnx_sdn_assist`` no longer binds bare metal ports without a DHCP
+    client ID, such as Ethernet ports described only by their local link
+    information, on any network. Deployments that relied on it to bind them,
+    including on flat networks without an SDN controller, must enable
+    another mechanism driver that does, such as ``baremetal`` from
+    networking-baremetal.
