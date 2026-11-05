@@ -337,13 +337,38 @@ class SdnJournalThread(object):
                             context, row, job_id=job_id)
                         db.update_db_row_state(
                             context, row, sdn_const.MONITORING)
-                    else:
-                        LOG.warning("object %s has NULL job_id",
-                                    row.object_uuid)
+                    elif _get_blocked_port_id(context, row):
                         # Without a job, there is no way to tell when the
                         # port has been added to its partition key.
-                        if _get_blocked_port_id(context, row):
-                            self._fail_row(context, row)
+                        LOG.warning("object %s has NULL job_id",
+                                    row.object_uuid)
+                        self._fail_row(context, row)
+                    elif row.operation == sdn_const.DELETE:
+                        # Nothing shows the deletion was done, and until it
+                        # is, a port's GUID may still be in its partition
+                        # key. Sending it again is harmless: once it is
+                        # done, the controller answers 404.
+                        LOG.warning("SDN Controller returned no job for "
+                                    "%(operation)s %(type)s %(uuid)s, "
+                                    "sending it again: %(text)s",
+                                    {'operation': row.operation,
+                                     'type': row.object_type,
+                                     'uuid': row.object_uuid,
+                                     'text': response.text[:200]})
+                        self._retry_row(context, row)
+                    else:
+                        # The controller accepted the request but gave no
+                        # job to monitor. Sending it again would only make
+                        # the controller do it again.
+                        LOG.warning("SDN Controller returned no job for "
+                                    "%(operation)s %(type)s %(uuid)s, "
+                                    "assuming it is done: %(text)s",
+                                    {'operation': row.operation,
+                                     'type': row.object_type,
+                                     'uuid': row.object_uuid,
+                                     'text': response.text[:200]})
+                        db.update_db_row_state(
+                            context, row, sdn_const.COMPLETED)
             except sdn_exc.SDNRequestError as e:
                 log_args = {'operation': row.operation,
                             'type': row.object_type,

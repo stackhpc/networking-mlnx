@@ -713,6 +713,32 @@ class SdnDriverTestCase(SdnConfigBase):
         self._test_sync_progress_row(
             self._response(requests.codes.not_implemented))
 
+    def test_sync_pending_rows_without_job_id_completes_row(self):
+        for operation in (sdn_const.POST, sdn_const.PUT):
+            self._call_operation_object(operation, sdn_const.NETWORK)
+            with mock.patch('requests.request',
+                            return_value=self._response(requests.codes.ok,
+                                                        'null')):
+                self.thread._sync_pending_rows(self.context, False)
+
+            row = db.get_all_db_rows(self.context)[0]
+            self.assertEqual(sdn_const.COMPLETED, row.state)
+            self._db_cleanup()
+
+    def test_sync_pending_rows_delete_without_job_id_is_retried(self):
+        # Nothing shows that the deletion was done, so it is sent again.
+        for text in ('null', '<html>no job link</html>'):
+            self._call_operation_object(sdn_const.DELETE, sdn_const.PORT)
+            with mock.patch('requests.request',
+                            return_value=self._response(requests.codes.ok,
+                                                        text)):
+                self.thread._sync_pending_rows(self.context, False)
+
+            row = db.get_all_db_rows(self.context)[0]
+            self.assertEqual(sdn_const.PENDING, row.state)
+            self.assertEqual(1, row.retry_count)
+            self._db_cleanup()
+
     def test_sync_progress_rows_job_error_is_retried(self):
         # A job the controller answers with an error for, such as one it no
         # longer knows, doesn't stop the other jobs being checked.
