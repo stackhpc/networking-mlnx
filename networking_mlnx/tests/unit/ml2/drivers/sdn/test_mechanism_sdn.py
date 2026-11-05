@@ -907,8 +907,8 @@ class SdnDriverTestCase(SdnConfigBase):
     def test_thread_call(self):
         """Verify that the sync thread method is called."""
 
-        # Create any object that would spin up the sync thread via the
-        # decorator call_thread_on_end() used by all the event handlers.
+        # The driver starts the sync thread when it is initialised, and
+        # each operation sets the thread's sync event.
         self._call_operation_object(sdn_const.POST,
                                     sdn_const.NETWORK)
 

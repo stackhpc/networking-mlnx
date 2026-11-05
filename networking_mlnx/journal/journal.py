@@ -44,14 +44,6 @@ LOG = logging.getLogger(__name__)
 MAX_RETRY_DELAY = 300
 
 
-def call_thread_on_end(func):
-    def new_func(obj, *args, **kwargs):
-        return_value = func(obj, *args, **kwargs)
-        obj.journal.set_sync_event()
-        return return_value
-    return new_func
-
-
 def record(context, object_type, object_uuid, operation, data):
     db.create_pending_row(context, object_type, object_uuid, operation,
                           data)

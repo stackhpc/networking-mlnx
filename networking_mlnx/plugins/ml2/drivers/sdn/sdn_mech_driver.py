@@ -24,7 +24,6 @@ from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as neutron_const
-from neutron_lib import context as nl_context
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins.ml2 import api
 from oslo_config import cfg
@@ -406,16 +405,6 @@ class SDNMechanismDriver(api.MechanismDriver):
                                              port_dic['network_id']))
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, port_dic)
-
-    @journal.call_thread_on_end
-    def sync_from_callback(self, operation, res_type, res_id, resource_dict):
-        object_type = res_type.singular
-        object_uuid = (resource_dict[object_type]['id']
-                       if operation == sdn_const.POST else res_id)
-        if resource_dict is not None:
-            resource_dict = resource_dict[object_type]
-        journal.record(nl_context.get_admin_context(), object_type,
-                       object_uuid, operation, resource_dict)
 
     def _postcommit(self, context):
         if not self._is_sdn_sync_enabled():
