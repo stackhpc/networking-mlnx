@@ -210,8 +210,12 @@ class SDNMechanismDriver(api.MechanismDriver):
     @error_handler
     def create_network_precommit(self, context):
         network_dic = context.current
-        if (self._is_allowed_physical_networks(context) and
-            network_dic.get('provider:segmentation_id')):
+        # Every network with a VLAN or flat segment (context_validator) on
+        # synced physical networks is sent, as its updates and deletion are,
+        # so that the controller knows its ports' network: a flat network has
+        # no segmentation ID, nor has a network with several segments, which
+        # ML2 gives no provider attributes.
+        if self._is_allowed_physical_networks(context):
             network_dic[NETWORK_QOS_POLICY] = (
                 self._get_network_qos_policy(context, network_dic['id']))
             SDNMechanismDriver._record_in_journal(

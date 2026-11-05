@@ -624,6 +624,43 @@ class SdnDriverTestCase(SdnConfigBase):
             for object_type in (sdn_const.NETWORK, sdn_const.PORT):
                 self._test_operation_object(operation, object_type)
 
+    def _create_network(self, segments, physical_networks=None, **attrs):
+        if physical_networks:
+            # Read when the driver is initialised
+            self.mech.allowed_physical_networks = physical_networks
+        context = self._get_mock_network_operation_context()
+        context.current.update(attrs)
+        context.network_segments = segments
+        self.mech.create_network_precommit(context)
+        return [r.operation for r in db.get_all_db_rows(self.context)]
+
+    def test_create_flat_network_is_sent(self):
+        # The controller needs it for the network's ports.
+        self.assertEqual([sdn_const.POST], self._create_network(
+            self._get_segments_list(seg_id=None, net_type=constants.TYPE_FLAT),
+            **{'provider:network_type': constants.TYPE_FLAT,
+               'provider:segmentation_id': None}))
+
+    def test_create_multi_segment_network_is_sent(self):
+        # ML2 gives a network with several segments no provider attributes.
+        context = self._get_mock_network_operation_context()
+        for attr in ('provider:network_type', 'provider:segmentation_id'):
+            context.current.pop(attr, None)
+        segments = (self._get_segments_list() +
+                    self._get_segments_list(seg_id=SEG_ID + 1))
+        self.assertEqual([sdn_const.POST], self._create_network(segments))
+
+    def test_create_network_on_unsynced_physical_network_is_not_sent(self):
+        self.assertEqual([], self._create_network(
+            self._get_segments_list(seg_id=None, net_type=constants.TYPE_FLAT),
+            physical_networks=['otherphys'],
+            **{'provider:network_type': constants.TYPE_FLAT,
+               'provider:segmentation_id': None}))
+
+    def test_create_tunnel_network_is_not_sent(self):
+        self.assertEqual([], self._create_network(
+            self._get_segments_list(net_type=constants.TYPE_VXLAN)))
+
     def test_network(self):
         self._test_object_type(sdn_const.NETWORK)
 

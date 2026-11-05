@@ -1,0 +1,19 @@
+---
+upgrade:
+  - |
+    ``mlnx_sdn_assist`` now also sends the SDN controller the creation of
+    networks without a segmentation ID: flat networks, and networks with
+    several segments. It already sent their updates, deletion and ports, but
+    not their creation, since 2016, for a reason that wasn't recorded. A
+    controller that rejects such a creation now logs a failed journal row
+    for each one; nothing else waits on it.
+  - |
+    Networks created before the upgrade aren't sent again. A controller that
+    checks a port's network, such as the alternative fabric manager, rejects
+    their ports until it learns of the network. Updating the network, for
+    example its description, sends it, which the alternative fabric manager
+    takes as its creation.
+fixes:
+  - |
+    The SDN controller no longer gets ports, and updates, of flat networks
+    and networks with several segments that it was never told were created.
