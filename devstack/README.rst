@@ -269,6 +269,14 @@ its network's partition key (pkey):
   segments. It doesn't bind a port to any segment if another port with the
   same MAC address, and so the same GUID, is bound as ``ib_hostdev``.
 
+The controller identifies a port by the GUID in its DHCP client ID, so
+``mlnx_sdn_assist`` only sends it bound ports that have one, and fails the
+request that would bind a ``direct`` port without one on a synced VLAN
+network, so the port stays unbound. Other
+ports, such as Ethernet ports or a network's DHCP and router ports, aren't
+sent. A port's client ID can't be changed while it is bound to a synced
+network; unbind the port first.
+
 ``mlnx_sdn_assist`` only sends a network's ports while every segment of the
 network is on a physical network that it syncs, so it doesn't let a network
 have segments both on synced physical networks and on others. Networks that
@@ -309,6 +317,7 @@ runs out of retries, or whose job fails, stays in the
 ``sdn_journal`` table in the ``failed`` state, and every port with the same
 GUID is set to ``ERROR``, until an operator has checked that the GUID was
 removed from the partition key and deleted the row. This applies to every
-failed port deletion, including Ethernet ports, whose MAC address is compared
-with the GUIDs of instances' ports. Deletions recorded in the same second can
-still wait for each other, which needs the same operator action.
+failed port deletion, including any left from earlier releases for Ethernet
+ports, whose MAC address is compared with the GUIDs of instances' ports.
+Deletions recorded in the same second can still wait for each other, which
+needs the same operator action.

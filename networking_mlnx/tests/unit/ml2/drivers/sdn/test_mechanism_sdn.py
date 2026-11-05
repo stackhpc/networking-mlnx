@@ -274,6 +274,14 @@ class SdnDriverTestCase(SdnConfigBase):
                     'name': None,
                     'network_id': 'c13bba05-eb07-45ba-ace2-765706b2d701',
                     'network_qos_policy': None}
+        # The client ID that mlnx_infiniband gives the port, by which the
+        # controller identifies it.
+        gen_client_id = (
+            mech_mlnx.MlnxMechanismDriver._gen_client_id_with_prefix)
+        current['extra_dhcp_opts'] = [{
+            'opt_name': 'client-id',
+            'opt_value': gen_client_id(
+                current, mech_mlnx.HARDWARE_CLIENT_ID_PREFIX)}]
 
         # The port context should have NetwrokContext object that contain
         # the segments list
@@ -286,8 +294,19 @@ class SdnDriverTestCase(SdnConfigBase):
                             host=current['binding:host_id'],
                             original_host=original['binding:host_id'],
                             vif_type=portbindings.VIF_TYPE_UNBOUND,
-                            original_vif_type=portbindings.VIF_TYPE_UNBOUND)
+                            bottom_bound_segment=None,
+                            # It was bound, and so sent to the controller.
+                            original_vif_type=mech_mlnx.VIF_TYPE_IB_HOSTDEV,
+                            original_bottom_bound_segment=(
+                                self._get_segments_list()[0]))
         context._plugin_context = nl_context.get_admin_context()
+        return context
+
+    def _get_mock_delete_port_operation_context(self):
+        # ML2 deleting a bound port
+        context = self._get_mock_port_operation_context()
+        context.vif_type = mech_mlnx.VIF_TYPE_IB_HOSTDEV
+        context.bottom_bound_segment = self._get_segments_list()[0]
         return context
 
     def _get_mock_bind_operation_context(self):
@@ -318,6 +337,8 @@ class SdnDriverTestCase(SdnConfigBase):
         context.original = dict(context.current)
         context.original_host = context.host
         context.vif_type = mech_mlnx.VIF_TYPE_IB_HOSTDEV
+        context.original_vif_type = portbindings.VIF_TYPE_UNBOUND
+        context.original_bottom_bound_segment = None
         context.bottom_bound_segment = self._get_segments_list(
             net_type=net_type)[0]
         return context
@@ -429,8 +450,17 @@ class SdnDriverTestCase(SdnConfigBase):
 
     def _call_operation_object(self, operation, object_type):
         if object_type == sdn_const.PORT and operation == sdn_const.POST:
+            # A port is sent when its binding is committed.
             context = self._get_mock_commit_operation_context()
             method = getattr(self.mech, 'update_port_precommit')
+        elif object_type == sdn_const.PORT and operation == sdn_const.PUT:
+            # And updated when it changes while bound.
+            context = self._get_mock_commit_operation_context()
+            context.original_vif_type = context.vif_type
+            method = getattr(self.mech, 'update_port_precommit')
+        elif object_type == sdn_const.PORT and operation == sdn_const.DELETE:
+            context = self._get_mock_delete_port_operation_context()
+            method = getattr(self.mech, 'delete_port_precommit')
         else:
             context = self._get_mock_operation_context(object_type)
             operation = self.OPERATION_MAPPING[operation]
@@ -459,8 +489,8 @@ class SdnDriverTestCase(SdnConfigBase):
 
         self._call_operation_object(operation, object_type)
 
-        if object_type == sdn_const.PORT and operation == sdn_const.POST:
-            context = self._get_mock_bind_operation_context()
+        if object_type == sdn_const.PORT:
+            context = self._get_mock_commit_operation_context()
         else:
             context = self._get_mock_operation_context(object_type)
 
@@ -1159,6 +1189,8 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         SdnDriverTestCase._get_mock_bind_operation_context)
     _get_mock_commit_operation_context = (
         SdnDriverTestCase._get_mock_commit_operation_context)
+    _get_mock_delete_port_operation_context = (
+        SdnDriverTestCase._get_mock_delete_port_operation_context)
     _response = staticmethod(SdnDriverTestCase._response)
     _set_row_created_at = SdnDriverTestCase._set_row_created_at
 
@@ -1280,15 +1312,163 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
             self.assertRaises(RuntimeError, self.mech.update_port_precommit,
                               self._get_mock_commit_operation_context())
 
-    def test_bind_port_leaves_pkey_port_to_binding_commit(self):
-        self.mech.bind_port(self._get_mock_bind_operation_context())
+    def test_bind_port_sends_nothing(self):
+        # Ports are sent when their binding is committed.
+        for vnic_type in (portbindings.VNIC_DIRECT, portbindings.VNIC_NORMAL):
+            context = self._get_mock_bind_operation_context()
+            context.current['binding:vnic_type'] = vnic_type
+            self.mech.bind_port(context)
         self.assertEqual([], self._rows())
 
-    def test_bind_port_sends_other_ports(self):
-        context = self._get_mock_bind_operation_context()
-        context.current['binding:vnic_type'] = portbindings.VNIC_NORMAL
-        self.mech.bind_port(context)
+    @staticmethod
+    def _remove_client_id(context):
+        for port in (context.current, context.original):
+            port['extra_dhcp_opts'] = []
+        return context
+
+    def test_binding_commit_without_client_id_fails(self):
+        # The controller can't add the port to its partition key, and it
+        # must not be up outside it.
+        context = self._remove_client_id(
+            self._get_mock_commit_operation_context())
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.update_port_precommit, context)
+        self.assertEqual([], self._rows())
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_on_flat_without_client_id_sends_nothing(
+            self, add_block):
+        context = self._remove_client_id(
+            self._get_mock_commit_operation_context(
+                net_type=constants.TYPE_FLAT))
+        self.mech.update_port_precommit(context)
+        self.assertEqual([], self._rows())
+        add_block.assert_not_called()
+
+    @mock.patch.object(provisioning_blocks, 'add_provisioning_component')
+    def test_binding_commit_of_ethernet_port_sends_nothing(self, add_block):
+        # For example a normal or SR-IOV port bound by another driver on a
+        # physical network that the controller manages.
+        for vif_type in (portbindings.VIF_TYPE_OVS,
+                         portbindings.VIF_TYPE_HW_VEB):
+            context = self._remove_client_id(
+                self._get_mock_commit_operation_context())
+            context.vif_type = vif_type
+            self.mech.update_port_precommit(context)
+        self.assertEqual([], self._rows())
+        add_block.assert_not_called()
+
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_port_without_client_id_is_never_sent(self, remove_block):
+        # Updated while bound
+        context = self._remove_client_id(
+            self._get_mock_commit_operation_context())
+        context.original_vif_type = context.vif_type
+        self.mech.update_port_precommit(context)
+        # Unbound
+        context = self._remove_client_id(
+            self._get_mock_port_operation_context())
+        context.original = dict(context.current)
+        context.current = dict(context.current, **{'binding:host_id': None})
+        context.host = None
+        self.mech.update_port_precommit(context)
+        # Deleted
+        self.mech.delete_port_precommit(self._remove_client_id(
+            self._get_mock_delete_port_operation_context()))
+
+        self.assertEqual([], self._rows())
+        remove_block.assert_not_called()
+
+    def test_activation_on_other_host_of_port_without_client_id(self):
+        context = self._get_mock_commit_operation_context()
+        context.original_vif_type = mech_mlnx.VIF_TYPE_IB_HOSTDEV
+        context.original_host = 'old-host'
+        context.original['binding:host_id'] = 'old-host'
+        context.original['extra_dhcp_opts'] = []
+        self.mech.update_port_precommit(context)
+        # The port was never sent for the old host.
         self.assertEqual([sdn_const.POST], [r.operation for r in self._rows()])
+
+    def _bound_baremetal(self, orig_client_id):
+        context = self._baremetal(self._get_mock_commit_operation_context())
+        context.original = dict(context.current, extra_dhcp_opts=(
+            [{'opt_name': 'client-id', 'opt_value': orig_client_id}]
+            if orig_client_id else []))
+        context.host = context.original_host = 'node-uuid'
+        context.vif_type = context.original_vif_type = (
+            portbindings.VIF_TYPE_OTHER)
+        context.original_bottom_bound_segment = context.bottom_bound_segment
+        return context
+
+    def test_client_id_of_bound_port_cant_change(self):
+        # The port would be up while the controller moves it.
+        for orig_client_id in ('20:00', None):
+            self.assertRaises(n_exc.InvalidInput,
+                              self.mech.update_port_precommit,
+                              self._bound_baremetal(orig_client_id))
+        context = self._bound_baremetal(CLIENT_ID)
+        context.current['extra_dhcp_opts'] = []
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.update_port_precommit, context)
+        context = self._bound_baremetal(CLIENT_ID)
+        context.current['extra_dhcp_opts'] = [
+            {'opt_name': 'client-id', 'opt_value': CLIENT_ID},
+            {'opt_name': 'client-id', 'opt_value': '20:00',
+             'ip_version': 6}]
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.update_port_precommit, context)
+        self.assertEqual([], self._rows())
+
+    def test_client_id_of_port_bound_to_unsynced_segment_can_change(self):
+        context = self._bound_baremetal('20:00')
+        segment = self._get_segments_list(net_type=constants.TYPE_VXLAN)[0]
+        context.bottom_bound_segment = segment
+        context.original_bottom_bound_segment = segment
+        self.mech.update_port_precommit(context)
+        self.assertEqual([], self._rows())
+
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_rebind_on_same_host_with_new_client_id(self, remove_block):
+        # ML2 unbinds the port when its profile changes, for example, and
+        # binds it again on the same host.
+        context = self._bound_baremetal('20:00')
+        context.vif_type = portbindings.VIF_TYPE_UNBOUND
+        context.bottom_bound_segment = None
+        self.mech.update_port_precommit(context)
+
+        rows = self._rows()
+        self.assertEqual([sdn_const.DELETE], [r.operation for r in rows])
+        self.assertEqual('20:00', jsonutils.loads(rows[0].data)[
+            'extra_dhcp_opts'][0]['opt_value'])
+        remove_block.assert_called_once()
+
+    @mock.patch.object(provisioning_blocks, 'remove_provisioning_component')
+    def test_rebind_of_port_never_sent_sends_nothing(self, remove_block):
+        # For example, Nova rescheduling an instance after the binding
+        # failed on the first host.
+        context = self._get_mock_port_operation_context()
+        context.original = dict(context.current)
+        context.original_vif_type = portbindings.VIF_TYPE_BINDING_FAILED
+        context.current = dict(context.current,
+                               **{'binding:host_id': 'other-host'})
+        context.host = 'other-host'
+        self.mech.update_port_precommit(context)
+        self.assertEqual([], self._rows())
+        remove_block.assert_not_called()
+
+    def test_delete_of_unbound_port_sends_nothing(self):
+        self.mech.delete_port_precommit(
+            self._get_mock_port_operation_context())
+        self.assertEqual([], self._rows())
+
+    def test_client_id_of_bound_direct_port_cant_change(self):
+        context = self._get_mock_commit_operation_context()
+        context.original_vif_type = context.vif_type
+        context.current['extra_dhcp_opts'] = [
+            {'opt_name': 'client-id', 'opt_value': CLIENT_ID}]
+        self.assertRaises(n_exc.InvalidInput,
+                          self.mech.update_port_precommit, context)
+        self.assertEqual([], self._rows())
 
     def _baremetal(self, context, client_id=CLIENT_ID):
         port = context.current
@@ -1470,7 +1650,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
             self._db_cleanup()
 
     def test_delete_of_non_compute_direct_port_is_sent(self):
-        context = self._get_mock_port_operation_context()
+        context = self._get_mock_delete_port_operation_context()
         context.current['device_owner'] = 'other:owner'
         self.mech.delete_port_precommit(context)
         self.assertEqual([sdn_const.DELETE],

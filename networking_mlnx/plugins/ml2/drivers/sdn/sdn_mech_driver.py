@@ -223,15 +223,8 @@ class SDNMechanismDriver(api.MechanismDriver):
         if not self._is_allowed_physical_networks(context.network):
             return
         port_dic = context.current
-        # Instances' direct ports are sent when the binding is committed
-        # instead, see update_port_precommit().
-        if (self._is_send_bind_port(port_dic) and
-                not self._is_direct_port(port_dic)):
-            port_dic[NETWORK_QOS_POLICY] = (
-                self._get_network_qos_policy(context, port_dic['network_id']))
-            SDNMechanismDriver._record_in_journal(
-                context, sdn_const.PORT, sdn_const.POST, port_dic)
-
+        # Ports are sent to the controller when their binding is committed,
+        # see update_port_precommit().
         segments = context.network.network_segments
         for segment in segments:
 
@@ -296,54 +289,30 @@ class SDNMechanismDriver(api.MechanismDriver):
         port_dic[NETWORK_QOS_POLICY] = (
             self._get_network_qos_policy(context, port_dic['network_id']))
 
-        vnic_type = port_dic[portbindings.VNIC_TYPE]
-        if (self._is_direct_port(port_dic) and
-                self._is_binding_commit(context)):
+        if self._is_binding_commit(context):
             self._send_bound_port(context)
             return
-        if (self._is_ib_baremetal_port(port_dic) and
-                port_dic[portbindings.HOST_ID]):
-            if self._is_binding_commit(context):
-                self._send_bound_port(context)
-                return
-            if context.vif_type in UNBOUND_VIF_TYPES:
-                # ML2 binds the port next, and it is sent when the binding
-                # is committed, so that the port is held DOWN from then.
-                return
-        # Check if we get a client id after binding the bare metal port,
-        # and report the port to sdn controller
-        if vnic_type == portbindings.VNIC_BAREMETAL:
-            current_client_id = self._get_client_id_from_port(port_dic)
-            orig_client_id = self._get_client_id_from_port(orig_port_dict)
-            if current_client_id != orig_client_id:
-                SDNMechanismDriver._record_in_journal(
-                    context, sdn_const.PORT, sdn_const.POST, port_dic)
-                return
-            elif (orig_client_id and orig_port_dict[portbindings.HOST_ID] and
-                    not port_dic[portbindings.HOST_ID]):
+        if context.vif_type in UNBOUND_VIF_TYPES:
+            # The port is unbound, or ML2 binds it again, on its host or on
+            # another, and sends it once that binding is committed.
+            if self._was_sent(orig_port_dict, context.original_vif_type,
+                              context.original_bottom_bound_segment):
                 SDNMechanismDriver._record_in_journal(
                     context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
                 self._remove_pkey_block(context)
-                return
-        # delete the port in case instance is deleted
-        # and port is created separately
-        elif (orig_port_dict[portbindings.HOST_ID] and
-              not port_dic[portbindings.HOST_ID] and
-              (self._is_send_bind_port(orig_port_dict) or
-               self._is_direct_port(orig_port_dict))):
-            SDNMechanismDriver._record_in_journal(
-                context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
-            self._remove_pkey_block(context)
-        # delete the port in case instance is migrated to another hypervisor
-        elif (orig_port_dict[portbindings.HOST_ID] and
-              port_dic[portbindings.HOST_ID] !=
-              orig_port_dict[portbindings.HOST_ID] and
-              (self._is_send_bind_port(orig_port_dict) or
-               self._is_direct_port(orig_port_dict))):
-            SDNMechanismDriver._record_in_journal(
-                context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
-            self._remove_pkey_block(context)
-        else:
+            return
+        if not self._is_synced_binding(context.vif_type,
+                                       context.bottom_bound_segment):
+            return
+        if (self._get_client_id_opts(port_dic) !=
+                self._get_client_id_opts(orig_port_dict)):
+            # The controller identifies the port by it, and the port would
+            # be up while the controller moves it.
+            raise n_exc.InvalidInput(error_message=_(
+                "The DHCP client ID of port %s can't be changed while it is "
+                "bound to a network that the SDN controller manages; unbind "
+                "the port first") % port_dic['id'])
+        if self._get_client_id_from_port(port_dic):
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.PUT, port_dic)
 
@@ -364,12 +333,8 @@ class SDNMechanismDriver(api.MechanismDriver):
         if not self._is_allowed_physical_networks(context.network):
             return
         port_dic = context.current
-        # delete the port only if attached to a host
-        vnic_type = port_dic[portbindings.VNIC_TYPE]
-        if (port_dic[portbindings.HOST_ID] and
-            (vnic_type == portbindings.VNIC_BAREMETAL or
-             self._is_send_bind_port(port_dic) or
-             self._is_direct_port(port_dic))):
+        if self._was_sent(port_dic, context.vif_type,
+                          context.bottom_bound_segment):
             port_dic[NETWORK_QOS_POLICY] = (
                 self._get_network_qos_policy(context,
                                              port_dic['network_id']))
@@ -388,21 +353,17 @@ class SDNMechanismDriver(api.MechanismDriver):
     delete_network_postcommit = _postcommit
     delete_port_postcommit = _postcommit
 
-    def _is_send_bind_port(self, port_context):
-        """Verify that bind port is occur in compute context
+    def _is_synced_binding(self, vif_type, segment):
+        """Check if a binding is to a segment that the controller manages"""
+        return (vif_type not in UNBOUND_VIF_TYPES and
+                bool(segment) and
+                self.check_segment(segment) and
+                self._is_sdn_sync_enabled())
 
-        The request HTTP will occur only when the device owner is compute
-        or when device owner is in self.supported_device_owners
-        """
-        device_owner = port_context['device_owner']
-        return (device_owner and
-                (device_owner.lower().startswith(
-                 neutron_const.DEVICE_OWNER_COMPUTE_PREFIX) or
-                 device_owner in self.supported_device_owners))
-
-    @staticmethod
-    def _is_direct_port(port):
-        return port[portbindings.VNIC_TYPE] == portbindings.VNIC_DIRECT
+    def _was_sent(self, port, vif_type, segment):
+        """Check if a port with this binding was sent to the controller"""
+        return (self._is_synced_binding(vif_type, segment) and
+                bool(self._get_client_id_from_port(port)))
 
     @staticmethod
     def _get_client_id_opts(port):
@@ -464,19 +425,8 @@ class SDNMechanismDriver(api.MechanismDriver):
                 (context.original_vif_type in UNBOUND_VIF_TYPES or
                  context.original_host != context.host))
 
-    def _send_bound_port(self, context):
-        """Send a newly bound port to the SDN controller
-
-        For an InfiniBand port on a VLAN segment, an instance's or a bare
-        metal node's, also keep the port DOWN until the controller has added
-        it to the partition key. The journal then completes the provisioning
-        block, or sets the port to ERROR if the controller fails. The agent
-        enables an instance's virtual function only once the port is ACTIVE,
-        and Ironic waits for that before it powers the node on.
-
-        This runs in the transaction that commits the binding, so if it
-        fails, the binding fails too.
-        """
+    def _validate_client_id(self, context):
+        """Check that the controller can use the port's client ID"""
         client_id_opts = self._get_client_id_opts(context.current)
         if len(client_id_opts) > 1:
             # Which one the controller would use is undefined.
@@ -493,14 +443,41 @@ class SDNMechanismDriver(api.MechanismDriver):
             raise n_exc.InvalidInput(error_message=_(
                 "The DHCP client ID of port %s doesn't match its MAC "
                 "address") % context.current['id'])
-        if context.original_host and context.original_host != context.host:
-            # A binding activated on another host replaces the old one.
+
+    def _send_bound_port(self, context):
+        """Send a newly bound port to the SDN controller
+
+        For an InfiniBand port on a VLAN segment, an instance's or a bare
+        metal node's, also keep the port DOWN until the controller has added
+        it to the partition key. The journal then completes the provisioning
+        block, or sets the port to ERROR if the controller fails. The agent
+        enables an instance's virtual function only once the port is ACTIVE,
+        and Ironic waits for that before it powers the node on.
+
+        This runs in the transaction that commits the binding, so if it
+        fails, the binding fails too.
+        """
+        self._validate_client_id(context)
+        segment = context.bottom_bound_segment
+        if not self._is_synced_binding(context.vif_type, segment):
+            return
+        if (context.original_host and
+                context.original_host != context.host and
+                self._get_client_id_from_port(context.original)):
+            # A binding activated on another host replaces the old one, to
+            # the same network. ML2 doesn't give the old binding's levels
+            # here.
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, context.original)
-        segment = context.bottom_bound_segment
-        if (not segment or
-                not self.check_segment(segment) or
-                not self._is_sdn_sync_enabled()):
+        if not self._get_client_id_from_port(context.current):
+            # The controller can only identify a port by its client ID.
+            if (segment[api.NETWORK_TYPE] == neutron_const.TYPE_VLAN and
+                    context.vif_type == mech_mlnx.VIF_TYPE_IB_HOSTDEV):
+                # Without it, the port would be up outside its partition.
+                raise n_exc.InvalidInput(error_message=_(
+                    "Port %s has no DHCP client ID, so the SDN controller "
+                    "can't add it to its partition key") %
+                    context.current['id'])
             return
         SDNMechanismDriver._record_in_journal(
             context, sdn_const.PORT, sdn_const.POST, context.current)
@@ -521,8 +498,9 @@ class SDNMechanismDriver(api.MechanismDriver):
         """Check if driver is able to bind the port
 
         Port binding is supported if:
-          a. Port VNIC type in supported_vnic_types (currently VNIC_BAREMETAL)
-             and sdn sync disabled and not flat network.
+          a. Port VNIC type in supported_vnic_types (currently VNIC_BAREMETAL),
+             the port has a DHCP client ID, and the segment is flat or sdn
+             sync is enabled.
         Or
           b. Port is of VNIC type normal and:
             1. bind_normal_ports cfg opt is set.
