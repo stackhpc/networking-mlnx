@@ -446,10 +446,18 @@ class SdnJournalThread(object):
                 LOG.error("Failed to get SDN Controller job %(job_id)s: "
                           "%(error)s", {'job_id': row.job_id, 'error': e})
                 self._retry_row(context, row)
-            except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError):
-                # Don't raise the retry count, just log an error
-                LOG.error("Cannot connect to the SDN Controller")
-                db.update_db_row_state(context, row, sdn_const.PENDING)
-                # Break out of the loop and retry with the next
-                # timer interval
+            except sdn_exc.SDNUnreachableError:
+                # The job may well be fine, so keep monitoring it rather
+                # than send the request again, which would start another
+                # job. Check it again at the next timer interval.
+                LOG.error("Cannot connect to the SDN Controller to check "
+                          "job %s", row.job_id)
                 break
+            except (sdn_exc.SDNConnectionError, sdn_exc.SDNLoginError) as e:
+                # The controller answered with an error, for example because
+                # it no longer knows the job. Send the request again, up to
+                # retry_count times, rather than keep checking a job that
+                # can't be checked while other rows wait.
+                LOG.error("Failed to get SDN Controller job %(job_id)s: "
+                          "%(error)s", {'job_id': row.job_id, 'error': e})
+                self._retry_row(context, row)

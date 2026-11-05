@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    When ``mlnx_sdn_assist``'s journal can't reach the SDN controller to
+    check a job, it now keeps monitoring the job and checks it again later.
+    Previously it sent the request again, which started another job on the
+    controller although the first one may have been fine. When the
+    controller answers a job check with an error, for example because it no
+    longer knows the job, the request is still sent again, and this now
+    counts towards ``[sdn] retry_count``.

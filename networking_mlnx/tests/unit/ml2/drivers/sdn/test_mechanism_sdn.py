@@ -713,6 +713,53 @@ class SdnDriverTestCase(SdnConfigBase):
         self._test_sync_progress_row(
             self._response(requests.codes.not_implemented))
 
+    def test_sync_progress_rows_job_error_is_retried(self):
+        # A job the controller answers with an error for, such as one it no
+        # longer knows, doesn't stop the other jobs being checked.
+        for status_code in (requests.codes.not_found,
+                            requests.codes.internal_server_error):
+            self._call_operation_object(sdn_const.POST, sdn_const.NETWORK)
+            self._call_operation_object(sdn_const.PUT, sdn_const.NETWORK)
+            rows = sorted(db.get_all_db_rows(self.context),
+                          key=lambda r: r.operation == sdn_const.PUT)
+            for job_id, row in zip(('app/jobs/1', 'app/jobs/2'), rows):
+                db.update_db_row_job_id(self.context, row, job_id)
+                db.update_db_row_state(self.context, row,
+                                       sdn_const.MONITORING)
+            self._make_row_older(self.context, rows[0])
+
+            def request(method, url, **kwargs):
+                if url.endswith('app/jobs/1'):
+                    return self._response(status_code)
+                return self._response(requests.codes.ok,
+                                      '{"Status": "Completed"}')
+
+            with mock.patch('requests.request', side_effect=request):
+                self.thread._sync_progress_rows(self.context)
+
+            rows = {r.job_id: r for r in db.get_all_db_rows(self.context)}
+            self.assertEqual(sdn_const.PENDING, rows['app/jobs/1'].state)
+            self.assertEqual(1, rows['app/jobs/1'].retry_count)
+            self.assertEqual(sdn_const.COMPLETED, rows['app/jobs/2'].state)
+            self._db_cleanup()
+
+    def test_sync_progress_rows_connection_error_keeps_monitoring(self):
+        # The job may be fine, so it is checked again rather than the
+        # request being sent again.
+        self._call_operation_object(sdn_const.POST, sdn_const.NETWORK)
+        row = db.get_all_db_rows(self.context)[0]
+        db.update_db_row_job_id(self.context, row, 'app/jobs/1')
+        db.update_db_row_state(self.context, row, sdn_const.MONITORING)
+
+        with mock.patch('requests.request',
+                        side_effect=requests.exceptions.ConnectionError):
+            self.thread._sync_progress_rows(self.context)
+
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.MONITORING, row.state)
+        self.assertEqual('app/jobs/1', row.job_id)
+        self.assertEqual(0, row.retry_count)
+
     def test_sync_pending_rows_leaves_waiting_row_unchanged(self):
         # A row that has to wait isn't written to, so that rows waiting for
         # a long controller job don't add database writes on every sync.
