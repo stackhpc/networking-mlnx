@@ -119,6 +119,14 @@ The settings do the following:
     [pci]
     device_spec = {"physical_network": "ibphysnet", "devname": "ibs1"}
 
+To live migrate instances with InfiniBand ports between hosts, also add this
+to ``local.conf`` on every host that runs ``nova-compute``. See the live
+migration page of the networking-mlnx documentation for why::
+
+    [[post-config|$NOVA_CPU_CONF]]
+    [compute]
+    live_migration_wait_for_vif_plug = False
+
 Testing
 -------
 

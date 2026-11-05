@@ -15,6 +15,7 @@ Contents:
    installation
    usage
    devstack
+   live-migration
    contributing
    releasing
 
