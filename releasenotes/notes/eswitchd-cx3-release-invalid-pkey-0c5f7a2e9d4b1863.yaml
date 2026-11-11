@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    On ConnectX-3 adapters, releasing a virtual function now sets its
+    partition key to the invalid one, without logging an error.

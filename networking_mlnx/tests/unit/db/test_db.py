@@ -21,6 +21,7 @@ from neutron.tests.unit import testlib_api
 from neutron_lib import context
 from neutron_lib.db import api as db_api
 from oslo_db import exception
+from sqlalchemy import func
 
 from networking_mlnx.db import db
 from networking_mlnx.db.models import sdn_journal_db
@@ -39,21 +40,31 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         self.addCleanup(self._db_cleanup)
 
     def _db_cleanup(self):
-        self.db_context.session.query(sdn_journal_db.SdnJournal).delete()
+        with db_api.CONTEXT_WRITER.using(self.db_context):
+            self.db_context.session.query(
+                sdn_journal_db.SdnJournal).delete()
 
     def _update_row(self, row):
         with db_api.CONTEXT_WRITER.using(self.db_context):
             self.db_context.session.merge(row)
 
-    def _test_validate_updates(self, rows, time_deltas, expected_validations):
+    def _get_rows_in_order(self):
+        return sorted(db.get_all_db_rows(self.db_context),
+                      key=lambda row: (row.object_uuid, row.seqnum))
+
+    def _test_validate_updates(self, rows, time_deltas, expected_validations,
+                               seqnum=False):
         for row in rows:
             db.create_pending_row(self.db_context, *row)
 
-        # update row created_at
-        rows = db.get_all_db_rows(self.db_context)
+        # update row created_at. Without seqnum, as for rows recorded before
+        # it was added, the rows are ordered by created_at.
+        rows = self._get_rows_in_order()
         now = datetime.now()
         for row, time_delta in zip(rows, time_deltas):
             row.created_at = now - timedelta(hours=time_delta)
+            if not seqnum:
+                row.seqnum = None
             self._update_row(row)
 
         # validate if there are older rows
@@ -96,6 +107,79 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
     def test_validate_updates_same_created_time(self):
         self._test_validate_updates(
             [self.UPDATE_ROW, self.UPDATE_ROW], [0, 0], [True, True])
+
+    def test_validate_updates_same_created_time_by_seqnum(self):
+        self._test_validate_updates(
+            [self.UPDATE_ROW, self.UPDATE_ROW], [0, 0], [True, False],
+            seqnum=True)
+
+    def test_validate_updates_seqnum_overrides_created_time(self):
+        self._test_validate_updates(
+            [self.UPDATE_ROW, self.UPDATE_ROW], [0, 1], [True, False],
+            seqnum=True)
+
+    def test_validate_updates_row_without_seqnum_is_older(self):
+        for row in (self.UPDATE_ROW, self.UPDATE_ROW):
+            db.create_pending_row(self.db_context, *row)
+        old_row, new_row = self._get_rows_in_order()
+        # The old row was recorded before seqnum was added, after the new
+        # row by the clock.
+        old_row.seqnum = None
+        old_row.created_at = datetime.now() + timedelta(hours=1)
+        self._update_row(old_row)
+
+        self.assertTrue(db.check_for_older_ops(self.db_context, new_row))
+        self.assertFalse(db.check_for_older_ops(self.db_context, old_row))
+        self.assertFalse(db.check_for_newer_ops(
+            self.db_context, new_row, sdn_const.PUT))
+        self.assertTrue(db.check_for_newer_ops(
+            self.db_context, old_row, sdn_const.PUT))
+
+    def test_create_pending_row_numbers_rows_per_object(self):
+        other_row = list(self.UPDATE_ROW)
+        other_row[1] += 'a'
+        for row in (self.UPDATE_ROW, self.UPDATE_ROW, other_row):
+            db.create_pending_row(self.db_context, *row)
+
+        self.assertEqual(
+            [('id', 1), ('id', 2), ('ida', 1)],
+            [(row.object_uuid, row.seqnum)
+             for row in self._get_rows_in_order()])
+
+    def test_create_pending_row_after_rows_without_seqnum(self):
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row = db.get_all_db_rows(self.db_context)[0]
+        row.seqnum = None
+        self._update_row(row)
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+
+        self.assertEqual([1, None], sorted(
+            (row.seqnum for row in db.get_all_db_rows(self.db_context)),
+            key=lambda seqnum: seqnum is None))
+
+    def test_duplicate_seqnum_is_rejected(self):
+        # Concurrent transactions that pick the same number for an object
+        # fail, and are retried.
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+
+        def add_duplicate():
+            with db_api.CONTEXT_WRITER.using(self.db_context):
+                self.db_context.session.add(sdn_journal_db.SdnJournal(
+                    object_type=sdn_const.NETWORK, object_uuid='id',
+                    operation=sdn_const.PUT, data='{}', seqnum=1,
+                    state=sdn_const.PENDING))
+
+        self.assertRaises(exception.DBDuplicateEntry, add_duplicate)
+
+    def test_newer_ops_by_seqnum(self):
+        for row in (self.UPDATE_ROW, self.UPDATE_ROW):
+            db.create_pending_row(self.db_context, *row)
+        first, second = self._get_rows_in_order()
+
+        self.assertTrue(db.check_for_newer_ops(
+            self.db_context, first, sdn_const.PUT))
+        self.assertFalse(db.check_for_newer_ops(
+            self.db_context, second, sdn_const.PUT))
 
     def test_validate_updates_different_object_uuid(self):
         other_row = list(self.UPDATE_ROW)
@@ -150,6 +234,72 @@ class DbTestCase(testlib_api.SqlTestCaseLight):
         row = db.get_oldest_pending_db_row_with_lock(self.db_context)
         self.assertEqual(older_row.id, row.id)
         self.assertEqual(row.state, sdn_const.PROCESSING)
+
+    def test_get_oldest_valid_pending_row_none_when_no_rows(self):
+        validate = mock.Mock()
+        row, valid = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, validate)
+        self.assertIsNone(row)
+        self.assertFalse(valid)
+        validate.assert_not_called()
+
+    def test_get_oldest_valid_pending_row_valid(self):
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        validate = mock.Mock(return_value=True)
+        row, valid = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, validate)
+        self.assertTrue(valid)
+        validate.assert_called_once_with(self.db_context, row)
+        row = db.get_all_db_rows(self.db_context)[0]
+        self.assertEqual(sdn_const.PROCESSING, row.state)
+
+    def test_get_oldest_valid_pending_row_invalid_unchanged(self):
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        old_row = db.get_all_db_rows(self.db_context)[0]
+        old_row.last_retried -= timedelta(minutes=1)
+        self._update_row(old_row)
+        old_row = db.get_all_db_rows(self.db_context)[0]
+
+        row, valid = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, mock.Mock(return_value=False))
+        self.assertFalse(valid)
+        self.assertEqual(old_row.id, row.id)
+        row = db.get_all_db_rows(self.db_context)[0]
+        self.assertEqual(sdn_const.PENDING, row.state)
+        self.assertEqual(old_row.last_retried, row.last_retried)
+
+    @db_api.CONTEXT_WRITER
+    def _set_retry(self, context, retry_count, seconds_ago):
+        row = context.session.query(sdn_journal_db.SdnJournal).one()
+        now = context.session.execute(func.now()).scalar()
+        row.retry_count = retry_count
+        row.last_retried = now - timedelta(seconds=seconds_ago)
+        return row.id
+
+    def _test_retry_due(self, retry_count, seconds_ago, retry_delays):
+        self._db_cleanup()
+        db.create_pending_row(self.db_context, *self.UPDATE_ROW)
+        row_id = self._set_retry(self.db_context, retry_count, seconds_ago)
+        row, _ = db.get_oldest_valid_pending_db_row_with_lock(
+            self.db_context, mock.Mock(return_value=True),
+            retry_delays=retry_delays)
+        if row is None:
+            return False
+        self.assertEqual(row_id, row.id)
+        return True
+
+    def test_get_oldest_valid_pending_row_retry_due(self):
+        delays = [30, 60, 120]
+        self.assertTrue(self._test_retry_due(0, 0, delays))
+        self.assertFalse(self._test_retry_due(1, 0, delays))
+        self.assertTrue(self._test_retry_due(1, 40, delays))
+        self.assertFalse(self._test_retry_due(2, 40, delays))
+        self.assertTrue(self._test_retry_due(2, 70, delays))
+        # The last delay applies from its own retry onwards.
+        self.assertFalse(self._test_retry_due(3, 70, delays))
+        self.assertTrue(self._test_retry_due(3, 130, delays))
+        self.assertFalse(self._test_retry_due(5, 70, delays))
+        self.assertTrue(self._test_retry_due(5, 130, delays))
 
     def test_get_all_monitoring_db_row_by_oldest_order(self):
         db.create_pending_row(self.db_context, *self.UPDATE_ROW)

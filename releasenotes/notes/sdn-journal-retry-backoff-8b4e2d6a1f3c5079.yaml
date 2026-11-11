@@ -1,0 +1,18 @@
+---
+fixes:
+  - |
+    The SDN journal now waits longer before each new attempt to send a
+    request that has failed: at least one ``[sdn] sync_timeout`` before the
+    first retry, doubling with each further retry up to five minutes, or
+    one ``[sdn] sync_timeout`` if that is longer.
+    Previously a request that kept failing, for example because its
+    controller job kept failing, was sent again on every sync. With the
+    default ``[sdn] retry_count`` of -1 such a request is still retried
+    indefinitely, but at most every five minutes, or every
+    ``[sdn] sync_timeout`` if that is longer.
+upgrade:
+  - |
+    Requests that failed because the SDN controller was unreachable are
+    also retried with the longer delays, so after a controller outage some
+    of them can take up to five minutes to be sent once the controller is
+    back. Later operations on the same networks and ports wait for them.

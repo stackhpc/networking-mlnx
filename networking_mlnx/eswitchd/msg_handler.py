@@ -177,10 +177,12 @@ class PortUp(BasicMessageHandler):
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
         pci_slot = self.msg['pci_slot']
+        mac = self.msg.get('mac')
         try:
-            eswitch_handler.port_up(fabric, pci_slot)
+            eswitch_handler.port_up(fabric, pci_slot, mac)
         except Exception as e:
-            LOG.warning("Port up - %s", str(e))
+            LOG.error("Port up failed - %s", str(e))
+            return self.build_response(False, reason='Port up failed')
         return self.build_response(True, response={})
 
 
@@ -196,7 +198,8 @@ class PortDown(BasicMessageHandler):
         try:
             eswitch_handler.port_down(fabric, pci_slot)
         except Exception as e:
-            LOG.warning("Port down failed - %s", str(e))
+            LOG.error("Port down failed - %s", str(e))
+            return self.build_response(False, reason='Port down failed')
         return self.build_response(True, response={})
 
 

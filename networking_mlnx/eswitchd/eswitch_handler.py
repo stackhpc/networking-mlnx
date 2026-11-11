@@ -62,8 +62,21 @@ class eSwitchHandler(object):
     def plug_nic(self, fabric, device_id, vnic_mac, pci_slot):
         # TODO(adrianc): fabric and device_id are no longer used, we should
         # clean them up.
+        # Keep the link down until neutron-mlnx-agent finds that the port
+        # may use the network, which needs its partition key to be set up.
+        # Setting the GUID may enable the link, so disable it after that too.
+        # This holds even when the VF already has the GUID, for example when
+        # nova-compute plugs a running instance's VF again as it starts,
+        # since the same MAC address can belong to a port on another network:
+        # the agent then enables the link again within a polling interval.
+        self._disable_link(pci_slot)
         self.eswitch_mgr.set_device_ib_mac(pci_slot, vnic_mac)
+        self._disable_link(pci_slot)
         return pci_slot
+
+    def _disable_link(self, pci_slot):
+        self.eswitch_mgr.set_device_admin_state(
+            pci_slot, netdev_consts.ADMIN_STATE_DOWN)
 
     def delete_port(self, fabric, vnic_mac):
         pci_slot = self.eswitch_mgr.get_device_from_mac(vnic_mac, fabric)
@@ -92,8 +105,20 @@ class eSwitchHandler(object):
         # self.port_down(fabric, pci_slot)
         return ret
 
-    def port_up(self, fabric, pci_slot):
+    def port_up(self, fabric, pci_slot, mac=None):
+        """Enable the link of a VF
+
+        :param mac: if set, enable the link only if the VF's GUID is the
+                    one derived from this mac address, so that a VF left with
+                    another port's GUID can't use the network.
+        """
         # TODO(adrianc): remove un-needed fabric arg
+        if mac:
+            current_mac = self.eswitch_mgr.get_device_ib_mac(pci_slot)
+            if not current_mac or current_mac.lower() != mac.lower():
+                raise RuntimeError(
+                    "VF %s has the GUID of mac %s, not %s" %
+                    (pci_slot, current_mac, mac))
         self.eswitch_mgr.set_device_admin_state(
             pci_slot, netdev_consts.ADMIN_STATE_UP)
 

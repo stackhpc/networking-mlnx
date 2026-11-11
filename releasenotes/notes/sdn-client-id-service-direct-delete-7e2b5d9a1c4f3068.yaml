@@ -1,0 +1,12 @@
+---
+security:
+  - |
+    ``mlnx_sdn_assist`` now rejects a DHCP client ID set or changed by a
+    project on any port of a network it syncs, not only on ``direct`` and
+    ``baremetal`` ports, since a port's VNIC type can change later. It
+    accepts client IDs from users with the ``service`` role as well as from
+    administrators. A port with more than one client ID option can't be
+    bound, nor can a ``direct`` InfiniBand port whose client ID isn't the
+    one derived from its MAC address, from which its virtual function's GUID
+    is derived. The deletion of every ``direct`` port is now sent to the SDN
+    controller, whatever its device owner.

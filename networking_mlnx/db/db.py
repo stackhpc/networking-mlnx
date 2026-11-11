@@ -14,22 +14,33 @@
 #    under the License.
 import datetime
 
+from neutron.db.models import provisioning_block as pb_model
+from neutron.db import models_v2
+from neutron.plugins.ml2 import models as ml2_models
+from neutron_lib import constants as n_const
 from neutron_lib.db import api as db_api
 from oslo_serialization import jsonutils
+from sqlalchemy import and_
 from sqlalchemy import asc
 from sqlalchemy import func
+from sqlalchemy import not_
 from sqlalchemy import or_
 
 from networking_mlnx.db.models import sdn_journal_db
 from networking_mlnx.db.models import sdn_maintenance_db
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 
+# States of operations that the SDN controller may not have finished yet.
+# Operations that depend on them must wait, including while the controller
+# is still running the job for an accepted request (MONITORING).
+_UNFINISHED_STATES = (sdn_const.PENDING, sdn_const.PROCESSING,
+                      sdn_const.MONITORING)
+
 
 @db_api.CONTEXT_READER
 def check_for_pending_or_processing_ops(context, object_uuid, operation=None):
     q = context.session.query(sdn_journal_db.SdnJournal).filter(
-        or_(sdn_journal_db.SdnJournal.state == sdn_const.PENDING,
-            sdn_journal_db.SdnJournal.state == sdn_const.PROCESSING),
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
         sdn_journal_db.SdnJournal.object_uuid == object_uuid)
     if operation:
         if isinstance(operation, (list, tuple)):
@@ -42,8 +53,7 @@ def check_for_pending_or_processing_ops(context, object_uuid, operation=None):
 @db_api.CONTEXT_READER
 def check_for_pending_delete_ops_with_parent(context, object_type, parent_id):
     rows = context.session.query(sdn_journal_db.SdnJournal).filter(
-        or_(sdn_journal_db.SdnJournal.state == sdn_const.PENDING,
-            sdn_journal_db.SdnJournal.state == sdn_const.PROCESSING),
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
         sdn_journal_db.SdnJournal.object_type == object_type,
         sdn_journal_db.SdnJournal.operation == sdn_const.DELETE
     ).all()
@@ -55,14 +65,161 @@ def check_for_pending_delete_ops_with_parent(context, object_type, parent_id):
     return False
 
 
+def _get_created_at(context, row):
+    # Compare with the stored value rather than row.created_at, which the
+    # database may format differently when it is sent back as a parameter.
+    # SQLite stores it without fractional seconds, but compares it as text
+    # with a parameter that has them.
+    return context.session.query(
+        sdn_journal_db.SdnJournal.created_at).filter(
+        sdn_journal_db.SdnJournal.id == row.id).scalar_subquery()
+
+
+# The rows of an object are ordered by seqnum. Rows recorded before seqnum
+# was added have none, so they come before any row that has one, and are
+# ordered among themselves by created_at, which only has a resolution of a
+# second.
+
+def _is_older(context, row, same_second_is_older):
+    journal = sdn_journal_db.SdnJournal
+    if row.seqnum is not None:
+        return or_(journal.seqnum.is_(None), journal.seqnum < row.seqnum)
+    if same_second_is_older:
+        created_at = journal.created_at <= _get_created_at(context, row)
+    else:
+        created_at = journal.created_at < row.created_at
+    return and_(journal.seqnum.is_(None), created_at)
+
+
+def _is_newer(context, row):
+    journal = sdn_journal_db.SdnJournal
+    if row.seqnum is not None:
+        return journal.seqnum > row.seqnum
+    # A row created in the same second counts as newer. Callers use this to
+    # ignore stale rows, so erring this way can only make them ignore a row.
+    return or_(journal.seqnum.isnot(None),
+               journal.created_at >= _get_created_at(context, row))
+
+
 @db_api.CONTEXT_READER
 def check_for_older_ops(context, row):
     q = context.session.query(sdn_journal_db.SdnJournal).filter(
-        or_(sdn_journal_db.SdnJournal.state == sdn_const.PENDING,
-            sdn_journal_db.SdnJournal.state == sdn_const.PROCESSING),
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
         sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
-        sdn_journal_db.SdnJournal.created_at < row.created_at,
+        _is_older(context, row, same_second_is_older=False),
         sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def check_for_newer_ops(context, row, operation):
+    q = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
+        sdn_journal_db.SdnJournal.operation == operation,
+        _is_newer(context, row),
+        sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_READER
+def check_for_unfinished_delete_not_newer(context, row):
+    # Without seqnum, check_for_older_ops() can't order rows created in the
+    # same second, which is the norm for the DELETE of a port's old binding
+    # and the POST of its new one. Sending the POST first would let the
+    # DELETE remove the port from the partition key after its POST has
+    # completed.
+    q = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.state.in_(_UNFINISHED_STATES),
+        sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
+        sdn_journal_db.SdnJournal.operation == sdn_const.DELETE,
+        _is_older(context, row, same_second_is_older=True),
+        sdn_journal_db.SdnJournal.id != row.id)
+    return context.session.query(q.exists()).scalar()
+
+
+@db_api.CONTEXT_WRITER
+def lock_port_binding(context, port_id):
+    """Lock the port's active binding until the transaction ends
+
+    ML2 changes this row to unbind, rebind or move the port, so this keeps
+    the binding from changing under the caller.
+    """
+    context.session.query(ml2_models.PortBinding).filter(
+        ml2_models.PortBinding.port_id == port_id,
+        ml2_models.PortBinding.status == n_const.ACTIVE).with_for_update(
+    ).first()
+
+
+def get_port_guid_identity(port):
+    """Return what identifies a port's GUID on the fabric, or None
+
+    A bare metal node's InfiniBand port is identified by its DHCP client
+    ID, which contains its GUID. A virtual function's GUID is derived from
+    its port's MAC address. Different ports can have the same one: a bare
+    metal node's provisioning and tenant ports, or ports with the same MAC
+    address on different networks.
+    """
+    if port.get('binding:vnic_type') == 'baremetal':
+        for opt in port.get('extra_dhcp_opts') or ():
+            # Neutron stores option names as strings, so the client ID
+            # option set by its number (as Ironic does) is '61'.
+            if (isinstance(opt, dict) and
+                    str(opt.get('opt_name')) in ('client-id', '61') and
+                    opt.get('opt_value')):
+                return opt['opt_value'].lower()
+    mac = port.get('mac_address')
+    return mac.lower() if mac else None
+
+
+def _get_port_deletes_with_same_guid(context, row, states, not_newer=False):
+    identity = get_port_guid_identity(jsonutils.loads(row.data or '{}'))
+    if not identity:
+        return []
+    query = context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.object_type == sdn_const.PORT,
+        sdn_journal_db.SdnJournal.operation == sdn_const.DELETE,
+        sdn_journal_db.SdnJournal.state.in_(states),
+        sdn_journal_db.SdnJournal.object_uuid != row.object_uuid)
+    if not_newer:
+        query = query.filter(sdn_journal_db.SdnJournal.created_at <=
+                             _get_created_at(context, row))
+    rows = query.all()
+    return [r for r in rows
+            if get_port_guid_identity(jsonutils.loads(r.data or '{}')) ==
+            identity]
+
+
+@db_api.CONTEXT_READER
+def check_for_unfinished_delete_of_same_guid(context, row):
+    """Check if another port with the row's GUID is still being deleted
+
+    Until the controller has deleted it, the GUID can still be in the other
+    port's partition key. Only deletions recorded no later than the row
+    count, so that rows can't wait for each other: a deletion waits for
+    older operations on its own port.
+    """
+    return bool(_get_port_deletes_with_same_guid(
+        context, row, _UNFINISHED_STATES, not_newer=True))
+
+
+@db_api.CONTEXT_READER
+def check_for_failed_delete_of_same_guid(context, row):
+    """Check if the controller failed to delete a port with the row's GUID
+
+    The GUID may then still be in the other port's partition key.
+    """
+    return bool(_get_port_deletes_with_same_guid(
+        context, row, (sdn_const.FAILED,)))
+
+
+@db_api.CONTEXT_READER
+def port_has_provisioning_block(context, port_id, entity):
+    q = context.session.query(pb_model.ProvisioningBlock).join(
+        models_v2.Port,
+        models_v2.Port.standard_attr_id ==
+        pb_model.ProvisioningBlock.standard_attr_id).filter(
+        models_v2.Port.id == port_id,
+        pb_model.ProvisioningBlock.entity == entity)
     return context.session.query(q.exists()).scalar()
 
 
@@ -77,9 +234,34 @@ def get_all_db_rows_by_state(context, state):
         state=state).all()
 
 
-def _get_row_with_lock(session):
-    row = session.query(sdn_journal_db.SdnJournal).filter_by(
-        state=sdn_const.PENDING).order_by(
+def _retry_due(now, retry_delays):
+    """A filter for rows that have no retries or whose retry is due.
+
+    retry_delays[i] is the delay in seconds before retry i + 1. The last
+    delay also applies to later retries.
+    """
+    journal = sdn_journal_db.SdnJournal
+    clauses = [journal.retry_count == 0]
+    for retry, delay in enumerate(retry_delays, 1):
+        retry_match = (journal.retry_count >= retry
+                       if retry == len(retry_delays)
+                       else journal.retry_count == retry)
+        clauses.append(and_(
+            retry_match,
+            journal.last_retried <= now - datetime.timedelta(seconds=delay)))
+    return or_(*clauses)
+
+
+def _get_row_with_lock(session, exclude_ids=(), retry_delays=()):
+    query = session.query(sdn_journal_db.SdnJournal).filter_by(
+        state=sdn_const.PENDING)
+    if exclude_ids:
+        query = query.filter(
+            ~sdn_journal_db.SdnJournal.id.in_(exclude_ids))
+    if retry_delays:
+        now = session.execute(func.now()).scalar()
+        query = query.filter(_retry_due(now, retry_delays))
+    row = query.order_by(
         asc(sdn_journal_db.SdnJournal.last_retried)).with_for_update(
     ).first()
     return row
@@ -91,11 +273,33 @@ def _get_row_with_lock(session):
 # of them will get a deadlock from Galera and will have to retry the operation.
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
-def get_oldest_pending_db_row_with_lock(context):
-    row = _get_row_with_lock(context.session)
+def get_oldest_pending_db_row_with_lock(context, exclude_ids=()):
+    row = _get_row_with_lock(context.session, exclude_ids)
     if row:
         _update_db_row_state(context.session, row, sdn_const.PROCESSING)
     return row
+
+
+@db_api.retry_if_session_inactive()
+@db_api.CONTEXT_WRITER
+def get_oldest_valid_pending_db_row_with_lock(context, validate,
+                                              exclude_ids=(),
+                                              retry_delays=()):
+    """Lock the oldest pending row, and mark it processing if it's valid.
+
+    Returns the row, or None if there is no pending row, and the result of
+    validate(context, row). A row that has to wait for other operations is
+    left unchanged, so that it isn't rewritten on every sync. validate()
+    runs while the row is locked. Rows whose retry isn't due yet, as given
+    by retry_delays (see _retry_due), are not considered.
+    """
+    row = _get_row_with_lock(context.session, exclude_ids, retry_delays)
+    if not row:
+        return None, False
+    valid = validate(context, row)
+    if valid:
+        _update_db_row_state(context.session, row, sdn_const.PROCESSING)
+    return row, valid
 
 
 @db_api.retry_if_session_inactive()
@@ -152,11 +356,19 @@ def delete_row(context, row=None, row_id=None):
 def create_pending_row(context, object_type, object_uuid,
                        operation, data):
     data = jsonutils.dumps(data)
+    # This runs in the transaction that changes the object, so changes to
+    # one object get consecutive numbers. If concurrent transactions still
+    # pick the same number, the unique constraint fails one of them, and it
+    # is retried.
+    last_seqnum = context.session.query(
+        func.max(sdn_journal_db.SdnJournal.seqnum)).filter(
+        sdn_journal_db.SdnJournal.object_uuid == object_uuid).scalar()
     row = sdn_journal_db.SdnJournal(object_type=object_type,
                                     object_uuid=object_uuid,
                                     operation=operation, data=data,
                                     created_at=func.now(),
-                                    state=sdn_const.PENDING)
+                                    state=sdn_const.PENDING,
+                                    seqnum=(last_seqnum or 0) + 1)
     context.session.add(row)
 
 
@@ -203,12 +415,17 @@ def update_maintenance_operation(context, operation=None):
 
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
-def delete_rows_by_state_and_time(context, state, time_delta):
+def delete_rows_by_state_and_time(context, state, time_delta,
+                                  keep_port_deletes=False):
     now = context.session.execute(func.now()).scalar()
-    context.session.query(sdn_journal_db.SdnJournal).filter(
+    query = context.session.query(sdn_journal_db.SdnJournal).filter(
         sdn_journal_db.SdnJournal.state == state,
-        sdn_journal_db.SdnJournal.last_retried < now - time_delta).delete(
-        synchronize_session=False)
+        sdn_journal_db.SdnJournal.last_retried < now - time_delta)
+    if keep_port_deletes:
+        query = query.filter(not_(and_(
+            sdn_journal_db.SdnJournal.object_type == sdn_const.PORT,
+            sdn_journal_db.SdnJournal.operation == sdn_const.DELETE)))
+    query.delete(synchronize_session=False)
     context.session.expire_all()
 
 

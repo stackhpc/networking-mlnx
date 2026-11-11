@@ -1,0 +1,24 @@
+---
+security:
+  - |
+    ``neutron-mlnx-agent`` now enables the link of an InfiniBand virtual
+    function only while its port is ``ACTIVE``, administratively up and
+    bound to the agent's host, and only if the virtual function has the
+    port's GUID. ML2 makes a port ``ACTIVE`` only once nothing holds it, which
+    includes the SDN controller adding it to its partition key. The agent
+    disables the link when any of this stops being true. So an instance can't
+    reach the fabric outside its partition, even where Nova runs it without
+    waiting for its port, for example when it attaches an interface,
+    migrates or resumes an instance, or when ``vif_plugging_is_fatal`` is
+    ``False``. Instances get network access once their ports are
+    ``ACTIVE``, within one agent polling interval.
+  - |
+    ``neutron-mlnx-agent`` no longer reports a port up when it fails to
+    configure it, so the port can't become ``ACTIVE``, and it carries on
+    with the other ports.
+other:
+  - |
+    ``neutron-mlnx-agent`` now asks the Neutron server for the ``direct``
+    ports bound to its host on every polling iteration while virtual
+    functions are attached, and handles ``binding_activate`` notifications
+    for live migrated instances.

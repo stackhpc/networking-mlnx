@@ -64,3 +64,40 @@ class TestIbUtils(base.TestCase):
     def test__get_vfs_ib_mac_netlink_fail(self, get_vf_guid_mock):
         mac_map = self.ib_utils._get_vfs_ib_mac_netdev_api("ib0", [0, 1])
         self.assertIsNone(mac_map)
+
+    @mock.patch.object(ib_utils.IbUtils, '_config_vf_pkey')
+    @mock.patch.object(ib_utils.IbUtils, '_get_pkey_idx', return_value=3)
+    def test__config_vlan_ib_mlnx4(self, get_pkey_idx, config_vf_pkey):
+        self.ib_utils._config_vlan_ib_mlnx4('mlx4_0', '0000:06:00.2', 1, 5)
+        get_pkey_idx.assert_called_once_with(5, 'mlx4_0', 1)
+        config_vf_pkey.assert_called_once_with(
+            3, ib_utils.IbUtils.DEFAULT_PKEY_IDX, 'mlx4_0', '0000:06:00.2', 1)
+
+    @mock.patch.object(ib_utils.IbUtils, '_config_vf_pkey')
+    @mock.patch.object(ib_utils.IbUtils, '_get_pkey_idx', return_value=3)
+    def test__config_vlan_ib_mlnx4_untagged(self, get_pkey_idx,
+                                           config_vf_pkey):
+        self.ib_utils._config_vlan_ib_mlnx4('mlx4_0', '0000:06:00.2', 1, 0)
+        get_pkey_idx.assert_called_once_with(
+            ib_utils.IbUtils.DEFAULT_PKEY, 'mlx4_0', 1)
+
+    @mock.patch.object(ib_utils.IbUtils, '_config_vf_pkey')
+    @mock.patch.object(ib_utils.IbUtils, '_get_pkey_idx', return_value=None)
+    def test__config_vlan_ib_mlnx4_missing_pkey(self, get_pkey_idx,
+                                               config_vf_pkey):
+        self.assertRaises(RuntimeError, self.ib_utils._config_vlan_ib_mlnx4,
+                          'mlx4_0', '0000:06:00.2', 1, 5)
+        config_vf_pkey.assert_called_once_with(
+            ib_utils.IbUtils.INVALID_PKEY, ib_utils.IbUtils.DEFAULT_PKEY_IDX,
+            'mlx4_0', '0000:06:00.2', 1)
+
+    @mock.patch.object(ib_utils.IbUtils, '_config_vf_pkey')
+    @mock.patch.object(ib_utils.IbUtils, '_get_pkey_idx')
+    def test__config_vlan_ib_mlnx4_release(self, get_pkey_idx,
+                                          config_vf_pkey):
+        self.ib_utils._config_vlan_ib_mlnx4(
+            'mlx4_0', '0000:06:00.2', 1, ib_utils.constants.UNTAGGED_VLAN_ID)
+        get_pkey_idx.assert_not_called()
+        config_vf_pkey.assert_called_once_with(
+            ib_utils.IbUtils.INVALID_PKEY, ib_utils.IbUtils.DEFAULT_PKEY_IDX,
+            'mlx4_0', '0000:06:00.2', 1)

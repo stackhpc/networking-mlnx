@@ -1,0 +1,8 @@
+---
+security:
+  - |
+    On ConnectX-3 adapters, when a port's partition key is not in the
+    physical function's pkey table, ``eswitchd`` now removes the virtual
+    function from its partition and reports a failure, so the port isn't
+    reported up. Previously it did nothing, so a virtual function configured
+    again without being plugged again kept the partition key it had before.

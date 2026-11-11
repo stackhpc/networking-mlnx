@@ -32,6 +32,12 @@ cfg.CONF.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
 class SdnRestClient(object):
 
     MANDATORY_ARGS = ('url', 'token')
+    # Responses that mean the request itself is wrong, so sending it again
+    # cannot succeed.
+    REJECTED_STATUS_CODES = (requests.codes.bad_request,
+                             requests.codes.unprocessable_entity)
+    # Controllers can return a whole HTML page as the error.
+    MAX_ERROR_TEXT = 500
 
     @classmethod
     def create_client(cls):
@@ -94,9 +100,15 @@ class SdnRestClient(object):
         LOG.debug("Sending METHOD %(method)s URL %(url)s JSON %(data)s",
                   {'method': method, 'url': urlpath, 'data': data})
 
-        return self._check_response(requests.request(
+        try:
+            response = requests.request(
                 method, url=str(urlpath), headers=self.headers,
-                data=data, verify=self.verify, timeout=self.timeout), method)
+                data=data, verify=self.verify, timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            # For example the controller is unreachable or doesn't answer
+            # in time.
+            raise sdn_exc.SDNUnreachableError(msg=e) from e
+        return self._check_response(response, method)
 
     def _check_response(self, response, method):
         try:
@@ -110,6 +122,11 @@ class SdnRestClient(object):
             if (request_found and
                 response.status_code != requests.codes.not_implemented):
                 response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            if response.status_code in self.REJECTED_STATUS_CODES:
+                raise sdn_exc.SDNRequestError(
+                    msg='%s: %s' % (e, response.text[:self.MAX_ERROR_TEXT]))
+            raise sdn_exc.SDNConnectionError(msg=e)
         except Exception as e:
             raise sdn_exc.SDNConnectionError(msg=e)
         return response

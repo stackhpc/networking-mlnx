@@ -1,0 +1,19 @@
+---
+security:
+  - |
+    ``mlnx_sdn_assist`` now rejects a request that sets or changes the DHCP
+    client ID of a ``direct`` or ``baremetal`` port unless it comes from an
+    administrator. The SDN controller takes an InfiniBand port's GUID from
+    its client ID, so a project that set it could have had another port's
+    GUID added to its network's partition key. Nova, Ironic and
+    ``mlnx_infiniband`` set client IDs as administrators. A bare metal
+    node's InfiniBand port is no longer sent when it is created, only when
+    its binding is committed.
+  - |
+    Every ``direct`` InfiniBand port is now held ``DOWN`` until the SDN
+    controller has added it to its partition key, whatever its device
+    owner. Previously only instances' ports were.
+upgrade:
+  - |
+    Projects can no longer set the ``client-id`` DHCP option of ``direct``
+    or ``baremetal`` ports on networks that ``mlnx_sdn_assist`` syncs.

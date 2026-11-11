@@ -75,7 +75,8 @@ sdn_opts = [
                     default=[],
                     help=_("A list of InfiniBand physnets in which binding of "
                            "normal ports is allowed. This option is used in "
-                           "conjuction with bind_normal_ports. "
+                           "conjuction with bind_normal_ports, and must "
+                           "be set if bind_normal_ports is enabled. "
                            "The list must be a subset of physical_networks")),
         cfg.BoolOpt('cert_verify',
                     default="False",

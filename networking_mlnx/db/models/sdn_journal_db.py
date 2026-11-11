@@ -21,6 +21,12 @@ from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 
 class SdnJournal(model_base.BASEV2, model_base.HasId):
     __tablename__ = 'sdn_journal'
+    __table_args__ = (
+        sa.UniqueConstraint(
+            'object_uuid', 'seqnum',
+            name='uniq_sdn_journal0object_uuid0seqnum'),
+        model_base.BASEV2.__table_args__
+    )
 
     object_type = sa.Column(sa.String(36), nullable=False)
     object_uuid = sa.Column(sa.String(36), nullable=False)
@@ -35,3 +41,6 @@ class SdnJournal(model_base.BASEV2, model_base.HasId):
     created_at = sa.Column(sa.DateTime, server_default=sa.func.now())
     last_retried = sa.Column(sa.TIMESTAMP, server_default=sa.func.now(),
                              onupdate=sa.func.now())
+    # Orders the rows of one object. created_at only has a resolution of a
+    # second. NULL for rows recorded before the column was added.
+    seqnum = sa.Column(sa.BigInteger, nullable=True)

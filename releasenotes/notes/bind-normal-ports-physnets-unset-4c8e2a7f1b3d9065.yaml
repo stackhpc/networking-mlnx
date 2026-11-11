@@ -1,0 +1,16 @@
+---
+upgrade:
+  - |
+    ``neutron-server`` now refuses to start if ``[sdn] bind_normal_ports`` is
+    enabled and ``[sdn] bind_normal_ports_physnets`` is empty. Previously,
+    with ``[sdn] physical_networks`` set to ``*``, the default, it started
+    but the ``mlnx_sdn_assist`` mechanism driver bound no normal ports. Set
+    ``[sdn] bind_normal_ports_physnets`` to the InfiniBand physical networks,
+    or disable ``[sdn] bind_normal_ports``.
+fixes:
+  - |
+    If ``[sdn] bind_normal_ports`` was enabled, ``[sdn] physical_networks``
+    listed physical networks and ``[sdn] bind_normal_ports_physnets`` was
+    empty, ``neutron-server`` failed to start with an unhelpful
+    ``TypeError``. It now reports that ``[sdn] bind_normal_ports_physnets``
+    must be set.

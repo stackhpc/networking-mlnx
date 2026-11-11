@@ -1,0 +1,19 @@
+---
+security:
+  - |
+    The ``mlnx_infiniband`` mechanism driver no longer binds a port to a VLAN
+    segment unless the ``mlnx_sdn_assist`` mechanism driver syncs the
+    segment's physical network to an SDN controller, which adds the port to
+    the segment's partition key. Previously the port was bound, and its
+    virtual function used the default partition, whatever the segmentation
+    ID. It also no longer binds a port if another port with the same MAC
+    address, on another network, is bound as ``ib_hostdev``, since both
+    virtual functions would have the same GUID.
+upgrade:
+  - |
+    Ports on VLAN networks of ``mlnx_infiniband`` fail to bind unless
+    ``mlnx_sdn_assist`` is enabled, with ``[sdn] sync_enabled`` and the
+    network's physical network in ``[sdn] physical_networks``. If the subnet
+    manager's partition configuration matches the networks' segmentation IDs
+    by other means, or the virtual functions are ConnectX-3 ones, set the
+    new ``[mlnx] allow_unenforced_pkeys`` option to ``True``.

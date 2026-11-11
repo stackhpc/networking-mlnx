@@ -1,0 +1,10 @@
+---
+issues:
+  - |
+    Live migrating an instance with an InfiniBand port needs
+    ``[compute] live_migration_wait_for_vif_plug = False`` in Nova's
+    configuration on the compute hosts that can receive it. Nova otherwise
+    waits for a ``network-vif-plugged`` event that nothing sends for an
+    InfiniBand port before the guest is copied, and the migration fails when
+    ``[DEFAULT] vif_plugging_timeout`` expires. See the live migration page
+    of the documentation.

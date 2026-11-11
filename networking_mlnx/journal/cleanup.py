@@ -33,10 +33,20 @@ class JournalCleanup(object):
 
     def delete_completed_rows(self, context):
         if self._rows_retention != -1:
-            LOG.debug("Deleting completed rows")
+            LOG.debug("Deleting completed and failed rows")
+            # Failed rows are never retried, so they are kept only for as
+            # long as completed ones, except failed port deletions: the
+            # port's GUID may still be in its partition key, and while the
+            # row exists no other port with that GUID is added to a
+            # partition key. An operator deletes the row once the GUID has
+            # been removed from the partition key.
             db.delete_rows_by_state_and_time(
                 context, sdn_const.COMPLETED,
                 timedelta(seconds=self._rows_retention))
+            db.delete_rows_by_state_and_time(
+                context, sdn_const.FAILED,
+                timedelta(seconds=self._rows_retention),
+                keep_port_deletes=True)
 
     def cleanup_processing_rows(self, context):
         row_count = db.reset_processing_rows(context, self._processing_timeout)

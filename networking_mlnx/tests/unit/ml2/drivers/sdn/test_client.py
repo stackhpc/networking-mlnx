@@ -17,6 +17,7 @@ import unittest.mock as mock
 
 from oslo_config import cfg
 from oslo_config import fixture as fixture_config
+import requests
 
 from networking_mlnx.plugins.ml2.drivers.sdn import client
 from networking_mlnx.plugins.ml2.drivers.sdn import config
@@ -177,3 +178,52 @@ class TestClient(base.TestCase):
         self.assertRaises(ValueError,
                           self.client.request,
                           sdn_const.DELETE, '', data)
+
+    @staticmethod
+    def _response(status_code, text=''):
+        response = requests.Response()
+        response.status_code = status_code
+        response._content = text.encode()
+        response.url = 'http://some_val/ufmRestV3'
+        return response
+
+    def test_check_response_success(self):
+        for status_code in (200, 201, 202, 204, 501):
+            response = self._response(status_code)
+            self.assertIs(response, self.client._check_response(
+                response, sdn_const.POST))
+
+    def test_check_response_delete_not_found(self):
+        response = self._response(404)
+        self.assertIs(response, self.client._check_response(
+            response, sdn_const.DELETE))
+
+    def test_check_response_rejected(self):
+        for status_code in (400, 422):
+            response = self._response(
+                status_code, 'Missing attribute(s): client-id')
+            e = self.assertRaises(exceptions.SDNRequestError,
+                                  self.client._check_response,
+                                  response, sdn_const.POST)
+            self.assertIn('Missing attribute(s): client-id', str(e))
+
+    def test_check_response_rejected_long_text(self):
+        response = self._response(400, '<html>' + 'x' * 10000)
+        e = self.assertRaises(exceptions.SDNRequestError,
+                              self.client._check_response,
+                              response, sdn_const.POST)
+        self.assertLess(len(str(e)), 1000)
+
+    def test_request_connection_failure(self):
+        for error in (requests.exceptions.ConnectionError,
+                      requests.exceptions.Timeout):
+            with mock.patch('requests.request', side_effect=error):
+                self.assertRaises(exceptions.SDNUnreachableError,
+                                  self.client.request, sdn_const.GET,
+                                  self.url)
+
+    def test_check_response_retryable(self):
+        for status_code in (401, 403, 404, 409, 429, 500, 503):
+            self.assertRaises(exceptions.SDNConnectionError,
+                              self.client._check_response,
+                              self._response(status_code), sdn_const.POST)

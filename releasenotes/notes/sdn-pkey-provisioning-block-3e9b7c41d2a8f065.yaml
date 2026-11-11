@@ -1,0 +1,28 @@
+---
+security:
+  - |
+    When the ``mlnx_sdn_assist`` mechanism driver syncs to an SDN controller,
+    an instance's InfiniBand port (VIF type ``ib_hostdev``) on a VLAN network
+    now stays ``DOWN`` until the controller's job that adds the port to the
+    network's partition key has completed. If the controller rejects the
+    port, its job fails, it doesn't implement the request, it doesn't return
+    a job, or the retries run out, the port is set to ``ERROR``. Nova then
+    fails the boot, at the latest when ``vif_plugging_timeout`` expires.
+    Previously the port could become ``ACTIVE``, and the instance could
+    start, while the port was still in the default partition, where it can
+    reach other tenants' ports.
+upgrade:
+  - |
+    Instances with InfiniBand ports on VLAN networks now fail to boot if the
+    SDN controller doesn't add their ports to the partition key. This relies
+    on the Nova defaults ``[DEFAULT] vif_plugging_is_fatal = True`` and a
+    non-zero ``vif_plugging_timeout``. If the controller can't be reached,
+    boots fail when the timeout expires. Check that the controller is
+    reachable and that the ``sdn_journal`` table has no rows stuck in the
+    ``pending`` or ``monitoring`` state before upgrading.
+  - |
+    The ``mlnx_sdn_assist`` mechanism driver now sends an instance's
+    ``direct`` port to the SDN controller when its binding is committed,
+    rather than each time ML2 tries to bind it, so failed binding attempts no
+    longer send the port. When Nova live migrates an instance, the port is
+    now sent for the destination host when its binding is activated.
