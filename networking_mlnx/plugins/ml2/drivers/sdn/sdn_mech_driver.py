@@ -143,22 +143,23 @@ class SDNMechanismDriver(api.MechanismDriver):
     def _check_physnet_confs():
         """Check physical network related ML2 driver configuration options"""
 
-        def _is_sublist(sub, lst):
-            return functools.reduce(
-                lambda x, y: x & y, map(lambda x: x in lst, sub))
-
         LOG.debug("physnet Config opts: physical_networks=%s, "
                   "bind_normal_ports=%s, bind_normal_ports_physnets=%s",
                   cfg.CONF.sdn.physical_networks,
                   cfg.CONF.sdn.bind_normal_ports,
                   cfg.CONF.sdn.bind_normal_ports_physnets)
 
+        if not cfg.CONF.sdn.bind_normal_ports:
+            return
+
+        if not cfg.CONF.sdn.bind_normal_ports_physnets:
+            raise sdn_excpt.SDNDriverConfError(
+                msg="'bind_normal_ports_physnets' configuration option must "
+                    "be set when 'bind_normal_ports' is enabled.")
         # Note(adrianc): if `bind_normal_ports` is set then
         # `bind_normal_ports_physnets` must be a subset of `physical_networks`
-        if (cfg.CONF.sdn.bind_normal_ports and
-                not (sdn_const.ANY in cfg.CONF.sdn.physical_networks) and
-                not _is_sublist(
-                    cfg.CONF.sdn.bind_normal_ports_physnets,
+        if (sdn_const.ANY not in cfg.CONF.sdn.physical_networks and
+                not set(cfg.CONF.sdn.bind_normal_ports_physnets).issubset(
                     cfg.CONF.sdn.physical_networks)):
             raise sdn_excpt.SDNDriverConfError(
                 msg="'bind_normal_ports_physnets' configuration option is "

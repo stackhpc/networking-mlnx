@@ -189,6 +189,28 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
         self.assertRaises(sdn_excpt.SDNDriverConfError,
                           self.mech._check_physnet_confs)
 
+    def test__check_physnet_confs_with_physnets_unset(self):
+        self._set_config(physical_networks=['testphys1'],
+                         bind_normal_ports=True,
+                         bind_normal_ports_physnets=[])
+        e = self.assertRaises(sdn_excpt.SDNDriverConfError,
+                              self.mech._check_physnet_confs)
+        self.assertIn("must be set", str(e))
+
+    def test__check_physnet_confs_any_physnet_physnets_unset(self):
+        self._set_config(physical_networks=['*'],
+                         bind_normal_ports=True,
+                         bind_normal_ports_physnets=[])
+        e = self.assertRaises(sdn_excpt.SDNDriverConfError,
+                              self.mech._check_physnet_confs)
+        self.assertIn("must be set", str(e))
+
+    def test__check_physnet_confs_bind_normal_ports_false_unset(self):
+        self._set_config(physical_networks=['testphys1'],
+                         bind_normal_ports=False,
+                         bind_normal_ports_physnets=[])
+        self.mech._check_physnet_confs()
+
     class SdnMechanismTestBasicGet(test_plugin.TestMl2BasicGet,
                                    SdnTestCase):
         pass
