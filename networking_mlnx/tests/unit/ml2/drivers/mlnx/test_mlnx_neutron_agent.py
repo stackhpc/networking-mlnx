@@ -119,6 +119,28 @@ class TestMlnxEswitchRpcCallbacks(base.BaseTestCase):
         agent.add_port_update.assert_called_once_with(
             ('10:20:30:40:50:60', '0000:05:00.4'))
 
+    def test_binding_activate_port_with_inactive_binding(self):
+        # The VF was attached while the port was still bound to the source
+        # host, so the agent didn't configure it.
+        agent = self.rpc_callbacks.agent
+        agent.conf.host = 'host1'
+        agent.eswitch.get_port_by_id.return_value = None
+        device = ('10:20:30:40:50:60', '0000:05:00.4')
+        agent.get_inactive_binding_devices.return_value = {device}
+        self.rpc_callbacks.binding_activate('context', port_id='port-id',
+                                            host='host1')
+        agent.add_port_update.assert_called_once_with(device)
+
+    def test_binding_activate_port_not_attached_yet(self):
+        # The VF is attached after the binding is activated, and then added.
+        agent = self.rpc_callbacks.agent
+        agent.conf.host = 'host1'
+        agent.eswitch.get_port_by_id.return_value = None
+        agent.get_inactive_binding_devices.return_value = set()
+        self.rpc_callbacks.binding_activate('context', port_id='port-id',
+                                            host='host1')
+        agent.add_port_update.assert_not_called()
+
     def test_binding_activate_other_host(self):
         agent = self.rpc_callbacks.agent
         agent.conf.host = 'host1'
@@ -173,6 +195,7 @@ class TestEswitchAgent(base.BaseTestCase):
         self.agent.agent_id = mock.Mock()
         self.agent.eswitch = mock.Mock()
         self.agent.eswitch.get_vnics.return_value = []
+        self.agent.eswitch.find_port_id_by_pci.return_value = None
 
     def test_treat_devices_added_returns_true_for_missing_device(self):
         attrs = {'get_devices_details_list.side_effect': Exception()}
@@ -655,3 +678,135 @@ class TestEswitchAgent(base.BaseTestCase):
             self.agent.process_network_ports(port_info)
         self.assertEqual(['removed', 'added'],
                          [c[0] for c in manager.mock_calls])
+
+    def test_treat_devices_added_no_active_binding(self):
+        # Neutron's answer for a port live migrated to this host whose
+        # binding here isn't active yet.
+        self.agent.plugin_rpc.get_devices_details_list.return_value = [
+            {'device': self.VNIC_PORT_1[0], 'no_active_binding': True}]
+        with mock.patch.object(self.agent, 'treat_vif_port') as treat:
+            self.assertFalse(self.agent.treat_devices_added_or_updated(
+                [self.VNIC_PORT_1]))
+        treat.assert_not_called()
+        self.agent.plugin_rpc.update_device_up.assert_not_called()
+        self.agent.plugin_rpc.update_device_down.assert_not_called()
+        self.assertEqual({self.VNIC_PORT_1},
+                         self.agent.get_inactive_binding_devices())
+
+        # Once the binding is active, the port is configured.
+        details = {'device': self.VNIC_PORT_1[0], 'port_id': 'port-id',
+                   'profile': {'pci_slot': self.VNIC_PORT_1[1]},
+                   'network_id': 'net-id', 'network_type': 'vlan',
+                   'physical_network': 'physnet', 'segmentation_id': 4,
+                   'admin_state_up': True}
+        self.agent.plugin_rpc.get_devices_details_list.return_value = [
+            details]
+        with mock.patch.object(self.agent, 'treat_vif_port') as treat:
+            self.assertFalse(self.agent.treat_devices_added_or_updated(
+                [self.VNIC_PORT_1]))
+        treat.assert_called_once()
+        self.agent.plugin_rpc.update_device_up.assert_called_once_with(
+            self.agent.context, self.VNIC_PORT_1[0], self.agent.agent_id,
+            self.agent.conf.host)
+        self.assertEqual(set(), self.agent.get_inactive_binding_devices())
+
+    def test_binding_activate_after_no_active_binding(self):
+        callbacks = mlnx_eswitch_neutron_agent.MlnxEswitchRpcCallbacks(
+            'context', self.agent, None)
+        self.agent.conf.host = 'host1'
+        self.agent.plugin_rpc.get_devices_details_list.return_value = [
+            {'device': self.VNIC_PORT_1[0], 'no_active_binding': True}]
+        self.agent.eswitch.get_vnics.return_value = {self.VNIC_PORT_1}
+        previous = self.agent.scan_ports(
+            dict(current=set(), added=set(), removed=set(), updated=set()),
+            sync=False)
+        self.assertEqual({self.VNIC_PORT_1}, previous['added'])
+        self.agent.process_network_ports(previous)
+
+        self.agent.eswitch.get_port_by_id.return_value = None
+        callbacks.binding_activate('context', port_id='port-id',
+                                   host='host1')
+
+        # The VF is processed again although it is still attached.
+        port_info = self.agent.scan_ports(previous, sync=False)
+        self.assertEqual({self.VNIC_PORT_1}, port_info['updated'])
+
+    def test_treat_devices_removed_no_active_binding(self):
+        self.agent._set_inactive_binding(self.VNIC_PORT_1, True)
+        self.assertFalse(self.agent.treat_devices_removed(
+            {self.VNIC_PORT_1}))
+        self.agent.plugin_rpc.update_device_down.assert_not_called()
+        self.agent.eswitch.port_release.assert_not_called()
+        self.assertEqual(set(), self.agent.get_inactive_binding_devices())
+
+    def test_treat_devices_removed_no_active_binding_configured_vf(self):
+        # The agent configured a port on the VF earlier.
+        self.agent._set_inactive_binding(self.VNIC_PORT_1, True)
+        self.agent.eswitch.find_port_id_by_pci.return_value = 'port-id'
+        self.agent.eswitch.get_port_id_by_pci.return_value = 'port-id'
+        self.agent.plugin_rpc.update_device_down.return_value = {
+            'exists': True}
+        self.assertFalse(self.agent.treat_devices_removed(
+            {self.VNIC_PORT_1}))
+        self.agent.plugin_rpc.update_device_down.assert_called_once()
+        self.agent.eswitch.port_release.assert_called_once_with(
+            self.VNIC_PORT_1[1])
+
+    def test_recheck_inactive_bindings(self):
+        self.agent.conf.host = 'host1'
+        self.agent._set_inactive_binding(self.VNIC_PORT_1, True)
+        self.agent._set_inactive_binding(self.VNIC_PORT_2, True)
+        self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.return_value = [
+            self._port((self.VNIC_PORT_1[0].upper(), self.VNIC_PORT_1[1]),
+                       status='DOWN'),
+            self._port(self.VNIC_PORT_2, host='host2')]
+        self.agent._recheck_inactive_bindings()
+        self.assertEqual({self.VNIC_PORT_1}, self.agent.updated_ports)
+
+    def test_ports_on_host_failure_is_cached(self):
+        self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.side_effect = (
+            ValueError)
+        ports_on_host = mlnx_eswitch_neutron_agent.PortsOnHost(self.agent)
+        self.assertRaises(ValueError, ports_on_host.get)
+        # Later callers in the iteration don't log the same traceback again.
+        self.assertRaises(mlnx_eswitch_neutron_agent.PortsUnavailable,
+                          ports_on_host.get)
+        self.assertEqual(
+            1, self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.
+            call_count)
+
+    def test_sync_link_states_and_recheck_share_ports(self):
+        self.agent.conf.host = 'host1'
+        self.agent.eswitch.get_vnics.return_value = {self.VNIC_PORT_1}
+        self.agent._set_inactive_binding(self.VNIC_PORT_2, True)
+        self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.return_value = [
+            self._port(self.VNIC_PORT_1), self._port(self.VNIC_PORT_2)]
+        ports_on_host = mlnx_eswitch_neutron_agent.PortsOnHost(self.agent)
+        self.agent._sync_link_states(ports_on_host)
+        self.agent._recheck_inactive_bindings(ports_on_host)
+        self.assertEqual(
+            1, self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.
+            call_count)
+        self.agent.eswitch.set_link.assert_called_once_with(
+            self.VNIC_PORT_1[1], self.VNIC_PORT_1[0])
+        self.assertEqual({self.VNIC_PORT_2}, self.agent.updated_ports)
+
+    def test_sync_link_states_ports_unavailable(self):
+        # Another caller in the iteration already logged the error.
+        self.agent.link_states[self.VNIC_PORT_1[1]] = (
+            self.VNIC_PORT_1[0], True)
+        self.agent.eswitch.get_vnics.return_value = {self.VNIC_PORT_1}
+        ports_on_host = mock.Mock()
+        ports_on_host.get.side_effect = (
+            mlnx_eswitch_neutron_agent.PortsUnavailable('failed'))
+        with mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                               'exception') as log_exception:
+            self.agent._sync_link_states(ports_on_host)
+        log_exception.assert_not_called()
+        self.agent.eswitch.set_link.assert_called_once_with(
+            self.VNIC_PORT_1[1], self.VNIC_PORT_1[0])
+
+    def test_recheck_inactive_bindings_without_devices(self):
+        self.agent._recheck_inactive_bindings()
+        self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.\
+            assert_not_called()
