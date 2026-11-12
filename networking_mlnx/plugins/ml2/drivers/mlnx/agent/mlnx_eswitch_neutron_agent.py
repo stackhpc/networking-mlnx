@@ -41,6 +41,22 @@ from networking_mlnx.plugins.ml2.drivers.mlnx import mech_mlnx
 
 LOG = logging.getLogger(__name__)
 
+# How long to wait before asking an eswitchd that doesn't know
+# get_plugged_vnics again, in case it was upgraded and restarted since. The
+# agent also asks again as soon as a request to eswitchd fails, which a
+# restart of eswitchd causes.
+PLUGGED_VNICS_RETRY_INTERVAL = 60
+# How long to look for the port that Nova is live migrating to this host for
+# a VF it plugged, before giving up on the plug. Nova sets migrating_to in
+# the same pre_live_migration RPC as it plugs the VF, so the port matches
+# within seconds or never, for example when the VF was plugged for another
+# reason.
+PLUGGED_VNIC_MATCH_WINDOW = 600
+
+# The ways a VF plugged by Nova can match a port, see _match_plug().
+PLUG_FOR_PORT_BOUND_HERE = 'bound-here'
+PLUG_FOR_MIGRATING_PORT = 'migrating'
+
 
 class PortsUnavailable(Exception):
     """The ports bound to this host couldn't be fetched in this iteration"""
@@ -108,6 +124,17 @@ class EswitchManager(object):
         for vnic in six.itervalues(self.utils.get_attached_vnics()):
             vnics.add((vnic['mac'], vnic['pci_slot']))
         return vnics
+
+    def get_plugged_vnics(self, skip_plug_ids=None):
+        """Get the VFs that Nova plugged and that still have their GUID
+
+        :param skip_plug_ids: IDs of plugs whose VF's GUID eswitchd needn't
+                              read
+        :return: dict, keyed by PCI slot, of dicts with the mac, pci_slot,
+                 plug_id and guid_checked of each VF, assigned to an
+                 instance or not
+        """
+        return self.utils.get_plugged_vnics(skip_plug_ids)
 
     def vnic_port_exists(self, pci_slot):
         return pci_slot in [
@@ -324,6 +351,20 @@ class MlnxEswitchNeutronAgent(object):
         # configured once Nova activates the port's binding on this host.
         # Guarded by _updated_ports_lock, since binding_activate reads it.
         self.inactive_binding_devices = set()
+        # The plug IDs, by PCI slot, of the VFs plugged by Nova that need
+        # nothing more from the agent: either it told Neutron that the VF is
+        # ready for the port being live migrated to this host, or the port
+        # is bound to this host, so it goes through the usual path once the
+        # VF is attached.
+        self.handled_plugs = {}
+        # The plug ID and the time when the agent first found that it matched
+        # no port, by PCI slot, see _plug_unmatched().
+        self._unmatched_plugs = {}
+        # When to ask eswitchd for the plugged VFs again, if it is too old
+        # to know them. None if it knows them, or hasn't been asked yet.
+        self._plugged_vnics_retry_at = None
+        # Whether eswitchd was last found not to know get_plugged_vnics.
+        self._plugged_vnics_unsupported = False
         self.context = context.get_admin_context_without_session()
         self.plugin_rpc = agent_rpc.PluginApi(topics.PLUGIN)
         self.sg_plugin_rpc = sg_rpc.SecurityGroupServerRpcApi(topics.PLUGIN)
@@ -688,6 +729,199 @@ class MlnxEswitchNeutronAgent(object):
                          device[0])
                 self.add_port_update(device)
 
+    def _get_plugged_vnics(self):
+        """Get the VFs plugged by Nova from eswitchd
+
+        :return: dict of the VFs by PCI slot, or None if eswitchd is too old
+        """
+        if (self._plugged_vnics_retry_at is not None and
+                time.monotonic() < self._plugged_vnics_retry_at):
+            return None
+        try:
+            # eswitchd needn't read the GUIDs of the VFs whose plugs the
+            # agent has handled, such as those of running instances.
+            plugged = self.eswitch.get_plugged_vnics(
+                list(self.handled_plugs.values()))
+        except exceptions.UnsupportedAction:
+            if not self._plugged_vnics_unsupported:
+                LOG.warning("eSwitchD doesn't support get_plugged_vnics, so "
+                            "the agent can't tell Neutron when the VF of a "
+                            "port live migrated to this host is ready, and "
+                            "Nova times out waiting for it unless [compute] "
+                            "live_migration_wait_for_vif_plug is False. "
+                            "Upgrade and restart eSwitchD.")
+                self._plugged_vnics_unsupported = True
+            self._plugged_vnics_retry_at = (
+                time.monotonic() + PLUGGED_VNICS_RETRY_INTERVAL)
+            return None
+        if self._plugged_vnics_unsupported:
+            LOG.info("eSwitchD now supports get_plugged_vnics")
+            self._plugged_vnics_unsupported = False
+        self._plugged_vnics_retry_at = None
+        return plugged or {}
+
+    def _match_plug(self, vnic, ports):
+        """Find the port that a VF plugged by Nova is for
+
+        :param vnic: the VF, as returned by eswitchd
+        :param ports: the direct ports with a binding on this host
+        :return: (PLUG_FOR_MIGRATING_PORT, port) for the only port with the
+                 VF's mac address that is bound to another host and that
+                 Nova is live migrating to this host, otherwise
+                 (PLUG_FOR_PORT_BOUND_HERE, None) if a port with the mac
+                 address is bound to this host with the VF, otherwise
+                 (None, None)
+        """
+        host = self.conf.host
+        mac = vnic['mac'].lower()
+        candidates = [port for port in ports
+                      if port['mac_address'].lower() == mac]
+        # The port's binding on this host is inactive, since the active one
+        # is on another host. mlnx_infiniband doesn't bind a port, actively
+        # or not, while another port with the same mac address has an
+        # ib_hostdev binding, so another port with the mac address can only
+        # be one bound by another mechanism driver. If such a port is bound
+        # here, a plug of its VF while the port with its mac address is
+        # migrating here would be taken as the migrating port's.
+        migrating = [
+            port for port in candidates
+            if port.get(portbindings.HOST_ID) and
+            port.get(portbindings.HOST_ID) != host and
+            (port.get(portbindings.PROFILE) or {}).get(
+                'migrating_to') == host]
+        if len(migrating) == 1:
+            return PLUG_FOR_MIGRATING_PORT, migrating[0]
+        if len(migrating) > 1:
+            LOG.warning("Several ports with mac %(mac)s are being live "
+                        "migrated to this host: %(ports)s. Not reporting "
+                        "the VF %(pci)s plugged for one of them.",
+                        {'mac': mac, 'pci': vnic['pci_slot'],
+                         'ports': [port['id'] for port in migrating]})
+        # Only a port bound here with this VF is the one the VF was plugged
+        # for: a port of another mechanism driver with the same mac address
+        # can be bound here too, before Nova sets migrating_to on the
+        # migrating port.
+        if any(port.get(portbindings.HOST_ID) == host and
+               (port.get(portbindings.PROFILE) or {}).get('pci_slot') ==
+               vnic['pci_slot']
+               for port in candidates):
+            return PLUG_FOR_PORT_BOUND_HERE, None
+        LOG.debug("No single port being live migrated to this host for the "
+                  "VF %(pci)s plugged with mac %(mac)s: %(ports)s",
+                  {'pci': vnic['pci_slot'], 'mac': mac,
+                   'ports': [port['id'] for port in candidates]})
+        return None, None
+
+    def _plug_handled(self, vnic):
+        """Look no more at a VF plugged by Nova, until it is plugged again"""
+        self.handled_plugs[vnic['pci_slot']] = vnic['plug_id']
+        self._unmatched_plugs.pop(vnic['pci_slot'], None)
+
+    def _plug_unmatched(self, vnic, now):
+        """Give up on a VF plugged by Nova that matched no port for long"""
+        pci_slot = vnic['pci_slot']
+        plug_id, since = self._unmatched_plugs.get(pci_slot, (None, None))
+        if plug_id != vnic['plug_id']:
+            self._unmatched_plugs[pci_slot] = (vnic['plug_id'], now)
+            return
+        if now - since < PLUGGED_VNIC_MATCH_WINDOW:
+            return
+        LOG.info("No port live migrated to this host matched the VF %(pci)s "
+                 "plugged with mac %(mac)s for %(window)s seconds, so it is "
+                 "no longer looked at",
+                 {'pci': pci_slot, 'mac': vnic['mac'],
+                  'window': PLUGGED_VNIC_MATCH_WINDOW})
+        self._plug_handled(vnic)
+
+    def _notify_plugged_vnics(self, ports_on_host=None):
+        """Tell Neutron when a live migrated port's VF is ready here
+
+        Before it copies an instance's memory, Nova waits for the
+        network-vif-plugged event of each of its ports, which Neutron sends
+        when an agent on a host that the port isn't bound to reports the
+        port up. Nova plugs the VF on the destination host before then, but
+        doesn't attach it to the instance, so the VF isn't listed by
+        get_vnics. So report the port up once for each plug of a VF that
+        still has the GUID of a port that is bound to another host, and that
+        Nova is live migrating to this host.
+
+        This doesn't configure the VF or enable its link, and doesn't change
+        the port's status or complete its provisioning, see
+        _sync_link_states().
+
+        :param ports_on_host: PortsOnHost to get the ports from
+        """
+        if ports_on_host is None:
+            ports_on_host = PortsOnHost(self)
+        plugged = self._get_plugged_vnics()
+        if plugged is None:
+            return
+        # Forget the plugs that are gone: Nova unplugged or plugged the VF
+        # again, or its GUID changed. A VF whose GUID eswitchd couldn't read
+        # is still listed, so its plug is kept.
+        for pci_slot, plug_id in list(self.handled_plugs.items()):
+            vnic = plugged.get(pci_slot)
+            if not vnic or vnic['plug_id'] != plug_id:
+                del self.handled_plugs[pci_slot]
+        for pci_slot, (plug_id, _since) in list(
+                self._unmatched_plugs.items()):
+            vnic = plugged.get(pci_slot)
+            if not vnic or vnic['plug_id'] != plug_id:
+                del self._unmatched_plugs[pci_slot]
+        # Only report VFs that eswitchd found to still have the GUID.
+        pending = [vnic for pci_slot, vnic in six.iteritems(plugged)
+                   if self.handled_plugs.get(pci_slot) != vnic['plug_id'] and
+                   vnic.get('guid_checked', False)]
+        if not pending:
+            return
+        now = time.monotonic()
+        ready = []
+        for vnic in pending:
+            match, _port = self._match_plug(vnic, ports_on_host.get())
+            if match == PLUG_FOR_PORT_BOUND_HERE:
+                # The usual path configures the port and reports it up when
+                # the VF is attached.
+                self._plug_handled(vnic)
+            elif match == PLUG_FOR_MIGRATING_PORT:
+                ready.append(vnic)
+            else:
+                self._plug_unmatched(vnic, now)
+        if not ready:
+            return
+        # Look at the ports again just before reporting them, rather than
+        # at those fetched earlier in this iteration: if Nova has activated
+        # the port's binding on this host since, the server would take the
+        # report as the agent's, and complete the port's provisioning before
+        # the agent configured the VF. Nova can still activate the binding
+        # between this and the report, since the server has no RPC that
+        # only sends the event, but that is a much shorter time, and Nova
+        # only does it after it has copied the guest, which it does after
+        # it gets the event.
+        host = self.conf.host
+        ports = self.plugin_rpc.get_ports_by_vnic_type_and_host(
+            self.context, portbindings.VNIC_DIRECT, host)
+        for vnic in ready:
+            match, port = self._match_plug(vnic, ports)
+            if match == PLUG_FOR_PORT_BOUND_HERE:
+                self._plug_handled(vnic)
+                continue
+            if match != PLUG_FOR_MIGRATING_PORT:
+                continue
+            try:
+                # The port's ID rather than its mac address, which is only
+                # unique in its network.
+                self.plugin_rpc.update_device_up(
+                    self.context, port['id'], self.agent_id, host)
+            except Exception:
+                LOG.exception("Failed to report that the VF %(pci)s of port "
+                              "%(port)s is plugged",
+                              {'pci': vnic['pci_slot'], 'port': port['id']})
+                continue
+            LOG.info("Reported that the VF %(pci)s of port %(port)s, live "
+                     "migrated to this host, is plugged",
+                     {'pci': vnic['pci_slot'], 'port': port['id']})
+            self._plug_handled(vnic)
+
     def _port_info_has_changes(self, port_info):
         return (port_info['added'] or
                 port_info['removed'] or
@@ -708,12 +942,15 @@ class MlnxEswitchNeutronAgent(object):
                 LOG.exception("Request timeout in agent event loop "
                               "eSwitchD is not responding - exiting...")
                 sync = True
+                # eswitchd may be restarting, possibly upgraded.
+                self._plugged_vnics_retry_at = None
                 continue
             except Exception:
                 # Don't let the loop die while the agent still reports
                 # itself alive. Try again after the polling interval.
                 LOG.exception("Failed to get the VFs from eSwitchD")
                 sync = True
+                self._plugged_vnics_retry_at = None
                 time.sleep(self._polling_interval)
                 continue
             if sync:
@@ -740,6 +977,14 @@ class MlnxEswitchNeutronAgent(object):
             except Exception:
                 LOG.exception("Failed to look for ports whose binding to "
                               "this host was activated")
+            try:
+                self._notify_plugged_vnics(ports_on_host)
+            except PortsUnavailable as e:
+                LOG.warning("Failed to look for VFs plugged for ports live "
+                            "migrated to this host: %s", e)
+            except Exception:
+                LOG.exception("Failed to look for VFs plugged for ports "
+                              "live migrated to this host")
             # sleep till end of polling interval
             elapsed = (time.time() - start)
             if (elapsed < self._polling_interval):

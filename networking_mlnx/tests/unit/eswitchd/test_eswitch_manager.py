@@ -107,6 +107,63 @@ class TestESwitchManagerApi(base.TestCase):
             self.mock_dev_wrapper.get_vfs_info.return_value = self.VF_INFO_OUT
             eswitch_mgr.discover_devices(device_mappings)
 
+    def test_get_vfs_ib_macs(self):
+        self.mock_dev_wrapper.get_vfs_macs_ib.return_value = {
+            '0': self.ASSIGNED_MAC, '2': '00:00:00:00:00:33'}
+        macs, unreadable = self.eswitch_mgr.get_vfs_ib_macs(
+            [self.PCI_SLOT, '0000:06:00.3', self.WRONG_PCI])
+        self.assertEqual({self.PCI_SLOT: self.ASSIGNED_MAC,
+                          '0000:06:00.3': '00:00:00:00:00:33',
+                          self.WRONG_PCI: None}, macs)
+        self.assertEqual(set(), unreadable)
+        # One read for the VFs of the embedded switch.
+        self.mock_dev_wrapper.get_vfs_macs_ib.assert_called_once()
+        self.assertEqual(
+            {'0', '2'},
+            set(self.mock_dev_wrapper.get_vfs_macs_ib.call_args[0][0]))
+        self.mock_dev_wrapper.is_assigned_vf.assert_not_called()
+
+    def test_get_vfs_ib_macs_failure(self):
+        self.mock_dev_wrapper.get_vfs_macs_ib.side_effect = IOError
+        macs, unreadable = self.eswitch_mgr.get_vfs_ib_macs(
+            [self.PCI_SLOT, self.WRONG_PCI])
+        self.assertEqual({self.WRONG_PCI: None}, macs)
+        self.assertEqual({self.PCI_SLOT}, unreadable)
+
+    def test_get_vfs_ib_macs_two_pfs_one_bad_vf(self):
+        # The VFs of the second PF are read in one call, but that fails
+        # because of one bad VF, so they are read again one by one.
+        good_switch = mock.Mock()
+        good_switch.get_vfs_ib_macs.side_effect = (
+            lambda slots: {slot: 'aa:00:00:00:00:01' for slot in slots})
+        bad_switch = mock.Mock()
+
+        def bad_read(slots):
+            if '0000:07:00.2' in slots:
+                raise IOError('bad VF')
+            return {slot: 'bb:00:00:00:00:01' for slot in slots}
+        bad_switch.get_vfs_ib_macs.side_effect = bad_read
+        slot_map = {'0000:06:00.1': good_switch, '0000:06:00.2': good_switch,
+                    '0000:07:00.1': bad_switch, '0000:07:00.2': bad_switch,
+                    '0000:07:00.3': bad_switch}
+        with mock.patch.dict(self.eswitch_mgr.pci_slot_map, slot_map,
+                             clear=True):
+            macs, unreadable = self.eswitch_mgr.get_vfs_ib_macs(
+                sorted(slot_map))
+        self.assertEqual({'0000:07:00.2'}, unreadable)
+        self.assertEqual({'0000:06:00.1': 'aa:00:00:00:00:01',
+                          '0000:06:00.2': 'aa:00:00:00:00:01',
+                          '0000:07:00.1': 'bb:00:00:00:00:01',
+                          '0000:07:00.3': 'bb:00:00:00:00:01'}, macs)
+        # One call for the first PF.
+        good_switch.get_vfs_ib_macs.assert_called_once_with(
+            ['0000:06:00.1', '0000:06:00.2'])
+        self.assertEqual(4, bad_switch.get_vfs_ib_macs.call_count)
+
+    def test_get_vfs_ib_macs_without_vfs(self):
+        self.assertEqual(({}, set()), self.eswitch_mgr.get_vfs_ib_macs([]))
+        self.mock_dev_wrapper.get_vfs_macs_ib.assert_not_called()
+
     def test_discover_devices_with_device(self):
         device_mappings = [('physnet1', 'p6p1'), ('physnet1', 'p6p2')]
         with mock.patch("networking_mlnx.eswitchd.utils.pci_utils."
@@ -312,6 +369,23 @@ class TestEmbSwitch(base.TestCase):
         self.mock_dev_wrapper.is_assigned_vf.return_value = False
         result = self.emb_switch.get_device_ib_mac(self.PCI_SLOT)
         self.assertIsNone(result)
+
+    def test_get_vfs_ib_macs_unassigned(self):
+        # Nova has plugged the VFs but hasn't attached them to an instance.
+        self.mock_dev_wrapper.is_assigned_vf.return_value = False
+        self.mock_dev_wrapper.get_vfs_macs_ib.return_value = {
+            '0': self.ASSIGNED_MAC}
+        result = self.emb_switch.get_vfs_ib_macs(
+            [self.PCI_SLOT, '0000:06:00.3'])
+        self.assertEqual({self.PCI_SLOT: self.ASSIGNED_MAC,
+                          '0000:06:00.3': None}, result)
+        self.mock_dev_wrapper.get_vfs_macs_ib.assert_called_once_with(
+            ['0', '2'])
+
+    def test_get_vfs_ib_macs_invalid_device(self):
+        self.assertRaises(exceptions.DeviceNotFoundException,
+                          self.emb_switch.get_vfs_ib_macs,
+                          [self.WRONG_PCI_SLOT])
 
     def test_get_pci_list(self):
         result = self.emb_switch.get_pci_slot_list()

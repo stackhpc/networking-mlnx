@@ -139,6 +139,23 @@ class GetVnics(BasicMessageHandler):
         return self.build_response(True, response=vnics)
 
 
+class GetPluggedVnics(BasicMessageHandler):
+    MSG_ATTRS_MANDATORY_MAP = ()
+
+    def __init__(self, msg):
+        super(GetPluggedVnics, self).__init__(msg)
+
+    def execute(self, eswitch_handler):
+        try:
+            vnics = eswitch_handler.get_plugged_vnics(
+                self.msg.get('skip_plug_ids'))
+        except Exception as e:
+            LOG.error("GetPluggedVnics failed - %s", str(e))
+            return self.build_response(False,
+                                       reason='Get plugged vnics failed')
+        return self.build_response(True, response=vnics)
+
+
 class PortRelease(BasicMessageHandler):
     MSG_ATTRS_MANDATORY_MAP = ('fabric', 'ref_by', 'pci_slot')
 
@@ -238,6 +255,7 @@ class MessageDispatch(object):
     MSG_MAP = {'delete_port': DetachVnic,
                'set_vlan': SetVLAN,
                'get_vnics': GetVnics,
+               'get_plugged_vnics': GetPluggedVnics,
                'port_release': PortRelease,
                'port_up': PortUp,
                'port_down': PortDown,

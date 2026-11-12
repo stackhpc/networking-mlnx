@@ -32,3 +32,8 @@ class OperationFailed(qexc.NeutronException):
 
 class GuidMismatch(OperationFailed):
     """eSwitchD didn't enable a VF's link, which doesn't have the GUID"""
+
+
+class UnsupportedAction(OperationFailed):
+    message = _("Operation Failed: eSwitchD does not support action "
+                "%(action)s")

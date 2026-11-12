@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from oslo_log import log as logging
+from oslo_utils import uuidutils
 
 from networking_mlnx.eswitchd.common import constants
 from networking_mlnx.eswitchd.common import exceptions
@@ -35,6 +36,13 @@ class eSwitchHandler(object):
         self.eswitch_mgr = eswitch_manager.ESwitchManager()
         self.pci_utils = pci_utils.pciUtils()
         self.devices = set()
+        # The VFs that Nova plugged with plug_nic, by PCI slot, as dicts of
+        # the mac address and a unique ID of the plug, so that
+        # neutron-mlnx-agent can tell Neutron when the VF of a port that is
+        # live migrated to this host is ready, before Nova attaches it to the
+        # instance. This is only kept in memory: after eswitchd restarts, VFs
+        # that Nova plugged before are unknown until Nova plugs them again.
+        self.plugged_vnics = {}
         if fabrics:
             self.add_fabrics(fabrics)
 
@@ -70,9 +78,13 @@ class eSwitchHandler(object):
         # nova-compute plugs a running instance's VF again as it starts,
         # since the same MAC address can belong to a port on another network:
         # the agent then enables the link again within a polling interval.
+        # Forget an earlier plug of the VF, also if this one fails.
+        self.plugged_vnics.pop(pci_slot, None)
         self._disable_link(pci_slot)
         self.eswitch_mgr.set_device_ib_mac(pci_slot, vnic_mac)
         self._disable_link(pci_slot)
+        self.plugged_vnics[pci_slot] = {
+            'mac': vnic_mac, 'plug_id': uuidutils.generate_uuid()}
         return pci_slot
 
     def _disable_link(self, pci_slot):
@@ -85,8 +97,45 @@ class eSwitchHandler(object):
             LOG.warning("MAC address %s not found in eSwitch for Fabric: %s",
                         vnic_mac, fabric)
         else:
+            self.plugged_vnics.pop(pci_slot, None)
             self.eswitch_mgr.set_device_ib_mac(pci_slot)
         return pci_slot
+
+    def get_plugged_vnics(self, skip_plug_ids=None):
+        """Get the VFs that Nova plugged and that still have their GUID
+
+        A VF is listed whether or not it is assigned to an instance. VFs
+        whose GUID has changed since they were plugged are forgotten. VFs
+        whose GUID can't be read now are listed with guid_checked False,
+        since they may still have it.
+
+        :param skip_plug_ids: IDs of plugs whose VF's GUID isn't read, for
+                              example those the caller has already handled.
+                              They are listed with guid_checked False.
+        :return: dict, keyed by the PCI slot of the VF, of dicts with the
+                 mac address, the PCI slot, the unique ID of the plug, and
+                 whether the VF was found to still have the GUID
+        """
+        skip_plug_ids = set(skip_plug_ids or ())
+        to_check = [pci_slot for pci_slot, plug in self.plugged_vnics.items()
+                    if plug['plug_id'] not in skip_plug_ids]
+        macs, unreadable = {}, set()
+        if to_check:
+            macs, unreadable = self.eswitch_mgr.get_vfs_ib_macs(to_check)
+        vnics = {}
+        for pci_slot, plug in list(self.plugged_vnics.items()):
+            checked = pci_slot in macs and pci_slot not in unreadable
+            if checked:
+                mac = macs[pci_slot]
+                if not mac or mac.lower() != plug['mac'].lower():
+                    LOG.info("VF %(pci)s no longer has the GUID of mac "
+                             "%(mac)s", {'pci': pci_slot, 'mac': plug['mac']})
+                    del self.plugged_vnics[pci_slot]
+                    continue
+            vnics[pci_slot] = {'mac': plug['mac'], 'pci_slot': pci_slot,
+                               'plug_id': plug['plug_id'],
+                               'guid_checked': checked}
+        return vnics
 
     def port_release(self, fabric, pci_slot):
         """Cleanup port from any additional configurations

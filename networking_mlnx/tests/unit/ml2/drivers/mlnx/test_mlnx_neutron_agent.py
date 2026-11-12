@@ -195,6 +195,7 @@ class TestEswitchAgent(base.BaseTestCase):
         self.agent.agent_id = mock.Mock()
         self.agent.eswitch = mock.Mock()
         self.agent.eswitch.get_vnics.return_value = []
+        self.agent.eswitch.get_plugged_vnics.return_value = {}
         self.agent.eswitch.find_port_id_by_pci.return_value = None
 
     def test_treat_devices_added_returns_true_for_missing_device(self):
@@ -810,3 +811,521 @@ class TestEswitchAgent(base.BaseTestCase):
         self.agent._recheck_inactive_bindings()
         self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.\
             assert_not_called()
+
+
+class TestPluggedVnics(base.BaseTestCase):
+    MAC = 'fa:16:3e:a6:71:17'
+    PCI_SLOT = '0000:06:00.2'
+
+    def setUp(self):
+        super(TestPluggedVnics, self).setUp()
+        cfg.CONF.set_default('firewall_driver', 'noop',
+                             group='SECURITYGROUP')
+        mock.patch.object(loopingcall.FixedIntervalLoopingCall,
+                          'start').start()
+        with mock.patch.object(utils, 'zmq'):
+            self.agent = mlnx_eswitch_neutron_agent.MlnxEswitchNeutronAgent(
+                {})
+        self.agent.conf.host = 'host1'
+        self.agent.plugin_rpc = mock.Mock()
+        self.agent.context = mock.Mock()
+        self.agent.agent_id = 'agent-id'
+        self.agent.eswitch = mock.Mock()
+        self.agent.eswitch.get_vnics.return_value = set()
+        self.rpc = self.agent.plugin_rpc
+        self.plug('plug-1')
+        self.ports([self._port()])
+
+    def plug(self, plug_id, mac=MAC, pci_slot=PCI_SLOT, guid_checked=True):
+        self.agent.eswitch.get_plugged_vnics.return_value = {
+            pci_slot: {'mac': mac, 'pci_slot': pci_slot,
+                       'plug_id': plug_id, 'guid_checked': guid_checked}}
+
+    def ports(self, ports):
+        self.rpc.get_ports_by_vnic_type_and_host.return_value = ports
+
+    def _port(self, port_id='port-1', mac=MAC, host='host2',
+              migrating_to='host1', pci_slot='0000:81:00.3'):
+        # The port dict has the active binding's host and profile.
+        profile = {}
+        if pci_slot:
+            profile['pci_slot'] = pci_slot
+        if migrating_to:
+            profile['migrating_to'] = migrating_to
+        return {'id': port_id, 'mac_address': mac, 'status': 'ACTIVE',
+                'admin_state_up': True, 'binding:host_id': host,
+                'binding:profile': profile}
+
+    def assert_notified(self, *port_ids):
+        self.assertEqual(
+            [mock.call(self.agent.context, port_id, 'agent-id', 'host1')
+             for port_id in port_ids],
+            self.rpc.update_device_up.call_args_list)
+
+    def test_notify(self):
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+        # The VF isn't configured and its link isn't enabled.
+        self.assertEqual([mock.call.get_plugged_vnics([])],
+                         self.agent.eswitch.mock_calls)
+        self.assertEqual({}, self.agent.link_states)
+        self.rpc.update_device_down.assert_not_called()
+
+    def test_notify_once_per_plug(self):
+        self.agent._notify_plugged_vnics()
+        # The ports of the iteration, then again just before reporting.
+        self.assertEqual(
+            2, self.rpc.get_ports_by_vnic_type_and_host.call_count)
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+        # Nothing awaits notification, so the ports aren't fetched again.
+        self.assertEqual(
+            2, self.rpc.get_ports_by_vnic_type_and_host.call_count)
+
+    def test_binding_activated_before_report(self):
+        # Nova activated the binding on this host after the agent got the
+        # ports of the iteration. Reporting the port up now would complete
+        # its provisioning before the VF is configured.
+        self.rpc.get_ports_by_vnic_type_and_host.side_effect = [
+            [self._port()],
+            [self._port(host='host1', pci_slot=self.PCI_SLOT)]]
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+
+    def test_binding_deleted_before_report(self):
+        # Nova rolled back the migration and deleted the binding here.
+        self.rpc.get_ports_by_vnic_type_and_host.side_effect = [
+            [self._port()], []]
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.assertEqual({}, self.agent.handled_plugs)
+
+    def test_fresh_ports_failure(self):
+        self.rpc.get_ports_by_vnic_type_and_host.side_effect = [
+            [self._port()], ValueError]
+        self.assertRaises(ValueError, self.agent._notify_plugged_vnics)
+        self.assert_notified()
+        self.assertEqual({}, self.agent.handled_plugs)
+
+    def test_notify_again_after_plug_again(self):
+        # For example a retried live migration to the same VF.
+        self.agent._notify_plugged_vnics()
+        self.plug('plug-2')
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1', 'port-1')
+        self.assertEqual({self.PCI_SLOT: 'plug-2'}, self.agent.handled_plugs)
+
+    def test_unplug_forgets_plug(self):
+        self.agent._notify_plugged_vnics()
+        # Nova unplugged the VF, for example when it rolled back the
+        # migration, or the VF's GUID changed.
+        self.agent.eswitch.get_plugged_vnics.return_value = {}
+        self.agent._notify_plugged_vnics()
+        self.assertEqual({}, self.agent.handled_plugs)
+        # A later migration of the same port to the same VF.
+        self.plug('plug-2')
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1', 'port-1')
+
+    def test_mac_is_case_insensitive(self):
+        self.ports([self._port(mac=self.MAC.upper())])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+
+    def test_port_bound_to_this_host(self):
+        # The usual boot or attach path, which reports the port up once the
+        # VF is attached.
+        self.ports([self._port(host='host1', migrating_to=None,
+                               pci_slot=self.PCI_SLOT)])
+        self.agent._notify_plugged_vnics()
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+        self.assertEqual(
+            1, self.rpc.get_ports_by_vnic_type_and_host.call_count)
+
+    def test_port_bound_to_this_host_with_stale_migrating_to(self):
+        self.ports([self._port(host='host1', pci_slot=self.PCI_SLOT)])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+
+    def test_same_mac_port_bound_here_before_migrating_to(self):
+        # A port of another mechanism driver with the same mac address is
+        # bound to this host with another VF. Nova sets migrating_to on the
+        # migrating port just after it plugs the VF.
+        other = self._port(port_id='port-2', host='host1', migrating_to=None,
+                           pci_slot='0000:06:00.7')
+        self.ports([other, self._port(migrating_to=None)])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.assertEqual({}, self.agent.handled_plugs)
+        self.ports([other, self._port()])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+
+    def test_port_bound_here_without_this_vf(self):
+        # A port bound to this host whose profile has no pci_slot, another
+        # one, or no profile at all, isn't the one the VF was plugged for.
+        window = mlnx_eswitch_neutron_agent.PLUGGED_VNIC_MATCH_WINDOW
+        no_profile = dict(self._port(host='host1', migrating_to=None),
+                          **{'binding:profile': None})
+        cases = {'none': self._port(host='host1', migrating_to=None,
+                                    pci_slot=None),
+                 'other': self._port(host='host1', migrating_to=None,
+                                     pci_slot='0000:06:00.7'),
+                 'no-profile': no_profile}
+        for case, port in cases.items():
+            with self.subTest(pci_slot=case):
+                self.agent.handled_plugs.clear()
+                self.agent._unmatched_plugs.clear()
+                self.ports([port])
+                self._notify_at(1000)
+                self.assertEqual({}, self.agent.handled_plugs)
+                self.assertIn(self.PCI_SLOT, self.agent._unmatched_plugs)
+                self._notify_at(1000 + window)
+                self.assertEqual({self.PCI_SLOT: 'plug-1'},
+                                 self.agent.handled_plugs)
+                self.assert_notified()
+
+    def test_no_binding_on_this_host(self):
+        # get_ports_by_vnic_type_and_host only returns ports with a binding
+        # on this host, so a port without one is never among them: either
+        # no port, or only ports with other mac addresses.
+        for ports in ([], [self._port(mac='fa:16:3e:00:00:01')]):
+            self.ports(ports)
+            self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.assertEqual({}, self.agent.handled_plugs)
+        self.assertIn(self.PCI_SLOT, self.agent._unmatched_plugs)
+
+    def test_migrating_elsewhere(self):
+        for migrating_to in (None, 'host3'):
+            self.ports([self._port(migrating_to=migrating_to)])
+            self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.assertEqual({}, self.agent.handled_plugs)
+
+    def test_migrating_to_set_after_plug(self):
+        # Nova sets migrating_to just after it plugs the VF.
+        self.ports([self._port(migrating_to=None)])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.ports([self._port()])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+
+    def test_unbound_port(self):
+        self.ports([self._port(host='')])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+
+    def test_ambiguous_mac(self):
+        # Ports on two networks can have the same mac address.
+        self.ports([self._port(), self._port(port_id='port-2')])
+        with mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                               'warning') as warning:
+            self.agent._notify_plugged_vnics()
+        warning.assert_called_once()
+        self.assertEqual(['port-1', 'port-2'],
+                         sorted(warning.call_args[0][1]['ports']))
+        self.assert_notified()
+        # The plug isn't handled, so it is looked at again.
+        self.assertEqual({}, self.agent.handled_plugs)
+        self.assertIn(self.PCI_SLOT, self.agent._unmatched_plugs)
+
+    def test_guid_changed(self):
+        # eswitchd doesn't list a VF that no longer has the plugged GUID.
+        self.agent.eswitch.get_plugged_vnics.return_value = {}
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.rpc.get_ports_by_vnic_type_and_host.assert_not_called()
+
+    def test_rpc_failure_is_retried(self):
+        self.rpc.update_device_up.side_effect = [Exception, None]
+        self.agent._notify_plugged_vnics()
+        self.assertEqual({}, self.agent.handled_plugs)
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1', 'port-1')
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+
+    def test_get_ports_failure(self):
+        self.rpc.get_ports_by_vnic_type_and_host.side_effect = ValueError
+        self.assertRaises(ValueError, self.agent._notify_plugged_vnics)
+        self.assert_notified()
+        self.assertEqual({}, self.agent.handled_plugs)
+
+    def test_old_eswitchd(self):
+        self.agent.eswitch.get_plugged_vnics.side_effect = (
+            exceptions.UnsupportedAction(action='get_plugged_vnics'))
+        with mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                               'warning') as warning, \
+                mock.patch.object(mlnx_eswitch_neutron_agent.time,
+                                  'monotonic', return_value=1000):
+            self.agent._notify_plugged_vnics()
+            self.agent._notify_plugged_vnics()
+        warning.assert_called_once()
+        # eswitchd isn't asked again for a while.
+        self.assertEqual(1, self.agent.eswitch.get_plugged_vnics.call_count)
+        self.assert_notified()
+        self.rpc.get_ports_by_vnic_type_and_host.assert_not_called()
+
+        # eswitchd was upgraded and restarted since.
+        self.agent.eswitch.get_plugged_vnics.side_effect = None
+        later = 1000 + mlnx_eswitch_neutron_agent.PLUGGED_VNICS_RETRY_INTERVAL
+        with mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                               'warning') as warning, \
+                mock.patch.object(mlnx_eswitch_neutron_agent.time,
+                                  'monotonic', return_value=later):
+            self.agent._notify_plugged_vnics()
+        warning.assert_not_called()
+        self.assert_notified('port-1')
+
+    def test_eswitchd_failure(self):
+        self.agent.eswitch.get_plugged_vnics.side_effect = (
+            exceptions.OperationFailed(err_msg='failed'))
+        self.assertRaises(exceptions.OperationFailed,
+                          self.agent._notify_plugged_vnics)
+        self.assertIsNone(self.agent._plugged_vnics_retry_at)
+
+    def test_iteration_ports_fetched_once_plus_before_report(self):
+        vnic = ('fa:16:3e:00:00:01', '0000:06:00.3')
+        self.agent.eswitch.get_vnics.return_value = {vnic}
+        self.ports([self._port(), dict(self._port(port_id='port-2',
+                                                  mac=vnic[0], host='host1'),
+                                       **{'binding:profile': {
+                                           'pci_slot': vnic[1]}})])
+        self.agent._set_inactive_binding(('fa:16:3e:00:00:02', vnic[1]),
+                                         True)
+
+        class StopLoop(BaseException):
+            pass
+
+        with mock.patch.object(self.agent, 'scan_ports',
+                               side_effect=[{'current': {vnic},
+                                             'added': set(),
+                                             'removed': set(),
+                                             'updated': set()},
+                                            StopLoop]), \
+                mock.patch.object(mlnx_eswitch_neutron_agent.time,
+                                  'sleep'):
+            self.assertRaises(StopLoop, self.agent.run)
+        # Once for the iteration, and once just before the report.
+        self.assertEqual(
+            2, self.rpc.get_ports_by_vnic_type_and_host.call_count)
+        self.agent.eswitch.set_link.assert_called_once_with(vnic[1], vnic[0])
+        self.assert_notified('port-1')
+
+    def test_ports_not_fetched_without_vnics_or_pending_plugs(self):
+        self.agent.eswitch.get_plugged_vnics.return_value = {}
+        ports_on_host = mlnx_eswitch_neutron_agent.PortsOnHost(self.agent)
+        self.agent._sync_link_states(ports_on_host)
+        self.agent._recheck_inactive_bindings(ports_on_host)
+        self.agent._notify_plugged_vnics(ports_on_host)
+        self.rpc.get_ports_by_vnic_type_and_host.assert_not_called()
+
+    def test_sync_link_states_ignores_plugged_vnics(self):
+        # The port is ACTIVE on the source host, so its VF on this host is
+        # disabled even after the agent reported it plugged.
+        vnic = (self.MAC, self.PCI_SLOT)
+        self.agent.eswitch.get_vnics.return_value = {vnic}
+        self.agent._notify_plugged_vnics()
+        self.agent._sync_link_states()
+        self.agent.eswitch.set_link.assert_called_once_with(
+            self.PCI_SLOT, None)
+        self.assertEqual({self.PCI_SLOT: (self.MAC, False)},
+                         self.agent.link_states)
+        self.agent.eswitch.port_up.assert_not_called()
+        self.agent.eswitch.set_port_vlan_id.assert_not_called()
+
+    def test_port_with_same_mac_bound_here(self):
+        # mlnx_infiniband doesn't bind two ports with the same mac address,
+        # but a port of another mechanism driver can have it.
+        other = self._port(port_id='port-2', host='host1', migrating_to=None)
+        self.ports([other, self._port()])
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+
+    def test_unreadable_guid_keeps_handled_plug(self):
+        self.agent._notify_plugged_vnics()
+        # eswitchd couldn't read the VF's GUID this time.
+        vnics = self.agent.eswitch.get_plugged_vnics.return_value
+        vnics[self.PCI_SLOT]['guid_checked'] = False
+        self.agent._notify_plugged_vnics()
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+        vnics[self.PCI_SLOT]['guid_checked'] = True
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+
+    def test_unreadable_guid_not_reported(self):
+        vnics = self.agent.eswitch.get_plugged_vnics.return_value
+        vnics[self.PCI_SLOT]['guid_checked'] = False
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+        self.rpc.get_ports_by_vnic_type_and_host.assert_not_called()
+        vnics[self.PCI_SLOT]['guid_checked'] = True
+        self.agent._notify_plugged_vnics()
+        self.assert_notified('port-1')
+
+    def _notify_at(self, now):
+        with mock.patch.object(mlnx_eswitch_neutron_agent.time, 'monotonic',
+                               return_value=now):
+            self.agent._notify_plugged_vnics()
+
+    def test_unmatched_plug_given_up(self):
+        window = mlnx_eswitch_neutron_agent.PLUGGED_VNIC_MATCH_WINDOW
+        self.ports([])
+        self._notify_at(1000)
+        self._notify_at(1000 + window - 1)
+        self.assertEqual({}, self.agent.handled_plugs)
+        with mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                               'info') as info:
+            self._notify_at(1000 + window)
+        info.assert_called_once()
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+        self.assertEqual({}, self.agent._unmatched_plugs)
+        calls = self.rpc.get_ports_by_vnic_type_and_host.call_count
+        # The agent no longer gets the ports for it.
+        self._notify_at(1000 + 2 * window)
+        self.assertEqual(
+            calls, self.rpc.get_ports_by_vnic_type_and_host.call_count)
+        self.assert_notified()
+
+    def test_unmatched_plug_window_restarts_on_new_plug(self):
+        window = mlnx_eswitch_neutron_agent.PLUGGED_VNIC_MATCH_WINDOW
+        self.ports([])
+        self._notify_at(1000)
+        self.plug('plug-2')
+        self._notify_at(1000 + window)
+        self.assertEqual({self.PCI_SLOT: ('plug-2', 1000 + window)},
+                         self.agent._unmatched_plugs)
+        self.assertEqual({}, self.agent.handled_plugs)
+
+    def test_unmatched_plug_forgotten_when_unplugged(self):
+        self.ports([])
+        self._notify_at(1000)
+        self.assertIn(self.PCI_SLOT, self.agent._unmatched_plugs)
+        self.agent.eswitch.get_plugged_vnics.return_value = {}
+        self._notify_at(1001)
+        self.assertEqual({}, self.agent._unmatched_plugs)
+
+    def test_unmatched_plug_matched_later(self):
+        self.ports([])
+        self._notify_at(1000)
+        self.ports([self._port()])
+        self._notify_at(1002)
+        self.assert_notified('port-1')
+        self.assertEqual({}, self.agent._unmatched_plugs)
+
+    def test_ports_failure_logged_once_per_iteration(self):
+        vnic = (self.MAC, self.PCI_SLOT)
+        self.agent.eswitch.get_vnics.return_value = {vnic}
+        self.rpc.get_ports_by_vnic_type_and_host.side_effect = ValueError
+
+        class StopLoop(BaseException):
+            pass
+
+        with mock.patch.object(self.agent, 'scan_ports',
+                               side_effect=[{'current': {vnic},
+                                             'added': set(),
+                                             'removed': set(),
+                                             'updated': set()},
+                                            StopLoop]), \
+                mock.patch.object(mlnx_eswitch_neutron_agent.time,
+                                  'sleep'), \
+                mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                                  'exception') as log_exception, \
+                mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                                  'warning') as log_warning:
+            self.assertRaises(StopLoop, self.agent.run)
+        log_exception.assert_called_once()
+        log_warning.assert_called_once()
+        self.assertEqual(
+            1, self.rpc.get_ports_by_vnic_type_and_host.call_count)
+        self.assert_notified()
+
+    def test_handled_plugs_skipped_by_eswitchd(self):
+        self.agent._notify_plugged_vnics()
+        self.agent.eswitch.get_plugged_vnics.assert_called_with([])
+        # eswitchd doesn't read the GUID of the handled VF again.
+        self.plug('plug-1', guid_checked=False)
+        self.agent._notify_plugged_vnics()
+        self.agent.eswitch.get_plugged_vnics.assert_called_with(['plug-1'])
+        self.assertEqual({self.PCI_SLOT: 'plug-1'}, self.agent.handled_plugs)
+        self.assert_notified('port-1')
+
+    def test_reply_without_guid_checked_not_reported(self):
+        vnics = self.agent.eswitch.get_plugged_vnics.return_value
+        del vnics[self.PCI_SLOT]['guid_checked']
+        self.agent._notify_plugged_vnics()
+        self.assert_notified()
+
+    def test_old_eswitchd_asked_again_after_eswitchd_failure(self):
+        # eswitchd restarted, maybe upgraded, which the agent sees as a
+        # failed request.
+        self.agent.eswitch.get_plugged_vnics.side_effect = (
+            exceptions.UnsupportedAction(action='get_plugged_vnics'))
+        self._notify_at(1000)
+        self.assertIsNotNone(self.agent._plugged_vnics_retry_at)
+
+        class StopLoop(BaseException):
+            pass
+
+        with mock.patch.object(self.agent, 'scan_ports',
+                               side_effect=[exceptions.OperationFailed(
+                                   err_msg='failed'), StopLoop]), \
+                mock.patch.object(mlnx_eswitch_neutron_agent.time,
+                                  'sleep'):
+            self.assertRaises(StopLoop, self.agent.run)
+        self.assertIsNone(self.agent._plugged_vnics_retry_at)
+        self.agent.eswitch.get_plugged_vnics.side_effect = None
+        self._notify_at(1001)
+        self.assert_notified('port-1')
+
+    def test_old_eswitchd_asked_again_after_eswitchd_timeout(self):
+        self.agent.eswitch.get_plugged_vnics.side_effect = (
+            exceptions.UnsupportedAction(action='get_plugged_vnics'))
+        self._notify_at(1000)
+        self.assertIsNotNone(self.agent._plugged_vnics_retry_at)
+
+        class StopLoop(BaseException):
+            pass
+
+        with mock.patch.object(self.agent, 'scan_ports',
+                               side_effect=[exceptions.RequestTimeout(),
+                                            StopLoop]), \
+                mock.patch.object(mlnx_eswitch_neutron_agent.time,
+                                  'sleep'):
+            self.assertRaises(StopLoop, self.agent.run)
+        self.assertIsNone(self.agent._plugged_vnics_retry_at)
+
+        # The upgraded eswitchd answers.
+        self.agent.eswitch.get_plugged_vnics.side_effect = None
+        with mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                               'info') as info:
+            self._notify_at(1001)
+        info.assert_any_call("eSwitchD now supports get_plugged_vnics")
+        self.assertFalse(self.agent._plugged_vnics_unsupported)
+        self.assert_notified('port-1')
+
+    def test_old_eswitchd_warned_once_until_supported(self):
+        unsupported = exceptions.UnsupportedAction(action='get_plugged_vnics')
+        self.agent.eswitch.get_plugged_vnics.side_effect = unsupported
+        with mock.patch.object(mlnx_eswitch_neutron_agent.LOG,
+                               'warning') as warning:
+            self._notify_at(1000)
+            # Asked again after eswitchd failed, still old.
+            self.agent._plugged_vnics_retry_at = None
+            self._notify_at(1001)
+            self.assertEqual(1, warning.call_count)
+            # A newer eswitchd, then an old one again, each found after a
+            # failed request.
+            self.agent._plugged_vnics_retry_at = None
+            self.agent.eswitch.get_plugged_vnics.side_effect = None
+            self._notify_at(1002)
+            self.agent.eswitch.get_plugged_vnics.side_effect = unsupported
+            self._notify_at(1003)
+            self.assertEqual(2, warning.call_count)

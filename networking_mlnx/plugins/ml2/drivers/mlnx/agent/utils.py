@@ -87,6 +87,9 @@ class EswitchUtils(object):
                 return msg.get('response')
             return
         elif msg['status'] == 'FAIL':
+            if msg.get('reason') == 'unknown action':
+                # An older eswitchd. The caller decides how much it matters.
+                raise exceptions.UnsupportedAction(action=msg.get('action'))
             msg_dict = dict(action=msg['action'], reason=msg['reason'])
             error_msg = _LE("Action %(action)s failed: %(reason)s") % msg_dict
             if msg.get('error') == eswitchd_constants.ERROR_GUID_MISMATCH:
@@ -102,6 +105,21 @@ class EswitchUtils(object):
         msg = jsonutils.dumps({'action': 'get_vnics', 'fabric': '*'})
         vnics = self.send_msg(msg)
         return vnics
+
+    def get_plugged_vnics(self, skip_plug_ids=None):
+        """Get the VFs that Nova plugged and that still have their GUID
+
+        :param skip_plug_ids: IDs of plugs whose VF's GUID eswitchd needn't
+                              read
+        :return: dict, keyed by PCI slot, of dicts with the mac, pci_slot,
+                 plug_id and guid_checked of each VF
+        :raises: UnsupportedAction if eswitchd is too old to know them
+        """
+        LOG.debug("get_plugged_vnics")
+        msg = {'action': 'get_plugged_vnics'}
+        if skip_plug_ids:
+            msg['skip_plug_ids'] = sorted(skip_plug_ids)
+        return self.send_msg(jsonutils.dumps(msg))
 
     def set_port_vlan_id(self, physical_network,
                          segmentation_id, pci_slot):

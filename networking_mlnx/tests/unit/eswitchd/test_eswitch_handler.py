@@ -23,6 +23,7 @@ from networking_mlnx.tests import base
 
 PCI_SLOT = '0000:12:00.4'
 MAC = 'fa:16:3e:a6:71:17'
+OTHER_MAC = 'fa:16:3e:00:00:01'
 
 
 class TestESwitchHandler(base.TestCase):
@@ -70,6 +71,110 @@ class TestESwitchHandler(base.TestCase):
         self.assertRaises(RuntimeError, self.handler.plug_nic,
                           'physnet', 'device', MAC, PCI_SLOT)
         self.mgr.set_device_ib_mac.assert_not_called()
+
+    def test_plug_nic_records_plug(self):
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        plug = self.handler.plugged_vnics[PCI_SLOT]
+        self.assertEqual(MAC, plug['mac'])
+        self.assertTrue(plug['plug_id'])
+
+    def test_plug_nic_again_gets_new_plug_id(self):
+        # For example when Nova retries a live migration to this host.
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        plug_id = self.handler.plugged_vnics[PCI_SLOT]['plug_id']
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        self.assertNotEqual(plug_id,
+                            self.handler.plugged_vnics[PCI_SLOT]['plug_id'])
+
+    def test_plug_nic_failure_forgets_plug(self):
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        self.mgr.set_device_ib_mac.side_effect = RuntimeError
+        self.assertRaises(RuntimeError, self.handler.plug_nic,
+                          'physnet', 'device', MAC, PCI_SLOT)
+        self.assertEqual({}, self.handler.plugged_vnics)
+
+    def test_delete_port_forgets_plug(self):
+        other_slot = '0000:12:00.5'
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        self.handler.plug_nic('physnet', 'device', OTHER_MAC, other_slot)
+        self.mgr.get_device_from_mac.return_value = PCI_SLOT
+        self.assertEqual(PCI_SLOT, self.handler.delete_port('physnet', MAC))
+        self.mgr.set_device_ib_mac.assert_called_with(PCI_SLOT)
+        self.assertEqual([other_slot], list(self.handler.plugged_vnics))
+
+    def test_delete_port_unknown_mac_keeps_plugs(self):
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        self.mgr.get_device_from_mac.return_value = None
+        self.assertIsNone(self.handler.delete_port('physnet', OTHER_MAC))
+        self.assertEqual([PCI_SLOT], list(self.handler.plugged_vnics))
+
+    def _macs(self, macs, unreadable=()):
+        self.mgr.get_vfs_ib_macs.return_value = (macs, set(unreadable))
+
+    def test_get_plugged_vnics(self):
+        other_slot = '0000:12:00.5'
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        self.handler.plug_nic('physnet', 'device', OTHER_MAC, other_slot)
+        plug_id = self.handler.plugged_vnics[PCI_SLOT]['plug_id']
+        # The VFs aren't assigned yet, so only get_vfs_ib_macs can read
+        # them. Their GUIDs are read together.
+        self._macs({PCI_SLOT: MAC.upper(), other_slot: OTHER_MAC})
+        vnics = self.handler.get_plugged_vnics()
+        self.assertEqual({'mac': MAC, 'pci_slot': PCI_SLOT,
+                          'plug_id': plug_id, 'guid_checked': True},
+                         vnics[PCI_SLOT])
+        self.assertEqual({PCI_SLOT, other_slot}, set(vnics))
+        self.mgr.get_vfs_ib_macs.assert_called_once_with(
+            [PCI_SLOT, other_slot])
+
+    def test_get_plugged_vnics_forgets_vf_with_other_guid(self):
+        for current_mac in (None, '00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff',
+                            OTHER_MAC):
+            self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+            self._macs({PCI_SLOT: current_mac})
+            self.assertEqual({}, self.handler.get_plugged_vnics())
+            self.assertEqual({}, self.handler.plugged_vnics)
+
+    def test_get_plugged_vnics_vf_it_cant_read(self):
+        other_slot = '0000:12:00.5'
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        self.handler.plug_nic('physnet', 'device', OTHER_MAC, other_slot)
+        self._macs({other_slot: OTHER_MAC}, unreadable=[PCI_SLOT])
+        vnics = self.handler.get_plugged_vnics()
+        # The VF may still have the GUID, so it is listed and kept.
+        self.assertFalse(vnics[PCI_SLOT]['guid_checked'])
+        self.assertTrue(vnics[other_slot]['guid_checked'])
+        self.assertEqual({PCI_SLOT, other_slot},
+                         set(self.handler.plugged_vnics))
+        # Once it can be read again.
+        self._macs({PCI_SLOT: MAC, other_slot: OTHER_MAC})
+        self.assertTrue(
+            self.handler.get_plugged_vnics()[PCI_SLOT]['guid_checked'])
+
+    def test_get_plugged_vnics_skips_handled_plugs(self):
+        other_slot = '0000:12:00.5'
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        self.handler.plug_nic('physnet', 'device', OTHER_MAC, other_slot)
+        plug_id = self.handler.plugged_vnics[PCI_SLOT]['plug_id']
+        self._macs({other_slot: OTHER_MAC})
+        vnics = self.handler.get_plugged_vnics([plug_id, 'gone'])
+        # The skipped VF's GUID isn't read, so it isn't checked either.
+        self.mgr.get_vfs_ib_macs.assert_called_once_with([other_slot])
+        self.assertEqual({'mac': MAC, 'pci_slot': PCI_SLOT,
+                          'plug_id': plug_id, 'guid_checked': False},
+                         vnics[PCI_SLOT])
+        self.assertTrue(vnics[other_slot]['guid_checked'])
+
+    def test_get_plugged_vnics_all_skipped(self):
+        self.handler.plug_nic('physnet', 'device', MAC, PCI_SLOT)
+        plug_id = self.handler.plugged_vnics[PCI_SLOT]['plug_id']
+        vnics = self.handler.get_plugged_vnics([plug_id])
+        self.mgr.get_vfs_ib_macs.assert_not_called()
+        self.assertFalse(vnics[PCI_SLOT]['guid_checked'])
+
+    def test_get_plugged_vnics_without_plugs(self):
+        self._macs({})
+        self.assertEqual({}, self.handler.get_plugged_vnics())
 
     def test_port_up_with_matching_guid_enables_link(self):
         self.mgr.get_device_ib_mac.return_value = MAC
@@ -132,3 +237,63 @@ class TestLinkMessages(base.TestCase):
         response, _handler = self._execute(msg_handler.PortDown, msg,
                                            RuntimeError)
         self.assertEqual('FAIL', response['status'])
+
+
+class TestPluggedVnicsMessages(base.TestCase):
+
+    def setUp(self):
+        super(TestPluggedVnicsMessages, self).setUp()
+        self.handler = mock.Mock()
+        self.dispatcher = msg_handler.MessageDispatch(self.handler)
+
+    def test_get_plugged_vnics(self):
+        vnics = {PCI_SLOT: {'mac': MAC, 'pci_slot': PCI_SLOT,
+                            'plug_id': 'plug-id'}}
+        self.handler.get_plugged_vnics.return_value = vnics
+        response = self.dispatcher.handle_msg(
+            {'action': 'get_plugged_vnics'})
+        self.assertEqual({'status': 'OK', 'response': vnics,
+                          'action': 'get_plugged_vnics'}, response)
+
+    def test_get_plugged_vnics_skip_plug_ids(self):
+        self.handler.get_plugged_vnics.return_value = {}
+        self.dispatcher.handle_msg({'action': 'get_plugged_vnics',
+                                    'skip_plug_ids': ['plug-id']})
+        self.handler.get_plugged_vnics.assert_called_once_with(['plug-id'])
+        # An older agent doesn't send them.
+        self.handler.get_plugged_vnics.reset_mock()
+        self.dispatcher.handle_msg({'action': 'get_plugged_vnics'})
+        self.handler.get_plugged_vnics.assert_called_once_with(None)
+
+    def test_get_plugged_vnics_failure_is_reported(self):
+        self.handler.get_plugged_vnics.side_effect = RuntimeError
+        response = self.dispatcher.handle_msg(
+            {'action': 'get_plugged_vnics'})
+        self.assertEqual('FAIL', response['status'])
+
+    def test_plug_and_delete_port_through_dispatcher(self):
+        with mock.patch.object(eswitch_handler.eswitch_manager,
+                               'ESwitchManager'), \
+                mock.patch.object(eswitch_handler.pci_utils, 'pciUtils'):
+            handler = eswitch_handler.eSwitchHandler()
+        dispatcher = msg_handler.MessageDispatch(handler)
+        mgr = handler.eswitch_mgr
+        mgr.get_vfs_ib_macs.side_effect = (
+            lambda slots: ({slot: MAC for slot in slots}, set()))
+        mgr.get_vfs_ib_macs.reset_mock()
+        # Nova's ebrctl add-port, with the mac address in upper case.
+        response = dispatcher.handle_msg(
+            {'action': 'plug_nic', 'fabric': 'physnet', 'device_id': 'vm',
+             'vnic_mac': MAC.upper(), 'dev_name': PCI_SLOT,
+             'vnic_type': 'ib_hostdev'})
+        self.assertEqual('OK', response['status'])
+        response = dispatcher.handle_msg({'action': 'get_plugged_vnics'})
+        self.assertEqual({PCI_SLOT}, set(response['response']))
+        self.assertEqual(MAC, response['response'][PCI_SLOT]['mac'])
+        # Nova's ebrctl del-port.
+        mgr.get_device_from_mac.return_value = PCI_SLOT
+        response = dispatcher.handle_msg(
+            {'action': 'delete_port', 'fabric': 'physnet', 'vnic_mac': MAC})
+        self.assertEqual('OK', response['status'])
+        response = dispatcher.handle_msg({'action': 'get_plugged_vnics'})
+        self.assertEqual({}, response['response'])

@@ -18,10 +18,25 @@ How it works
    network. Nothing is sent to an SDN controller yet.
 #. Nova plugs the destination virtual function with ``ebrctl add-port``:
    ``eswitchd`` gives it the GUID derived from the port's MAC address, the
-   same GUID as on the source, and keeps its link disabled. The virtual
-   function isn't attached to the guest yet, so ``neutron-mlnx-agent`` doesn't
-   see it, and nothing sends Nova a ``network-vif-plugged`` event for the
-   port.
+   same GUID as on the source, keeps its link disabled, and remembers that
+   Nova plugged it until ``eswitchd`` restarts. Nova then marks the port as
+   migrating to the destination (``migrating_to`` in its binding profile).
+#. The destination's ``neutron-mlnx-agent`` finds, within a polling
+   interval, the virtual function that still has the GUID of a port bound to
+   another host and migrating to this one, and reports the port up. Neutron
+   only forwards this to Nova as the ``network-vif-plugged`` event that Nova
+   waits for before it copies the guest: the port's status doesn't change,
+   and the virtual function isn't configured: its link isn't enabled, or on
+   ConnectX-3 adapters, whose link can't be controlled, its partition key
+   isn't written. The agent reports each plug once; if Nova unplugs the
+   virtual function, for example when it rolls back the migration, and
+   plugs it again, the agent reports it again. If ``neutron-mlnx-agent``
+   restarts during the migration, it may report it again, which does no
+   harm. If ``eswitchd`` restarts
+   before the agent finds the virtual function, nothing is reported, and
+   Nova times out and rolls back the migration, which can be tried again.
+   The agent stops looking at a plugged virtual function that matches no
+   port migrating to its host after 10 minutes.
 #. Nova hot-unplugs the virtual function from the guest on the source host.
    ``eswitchd`` invalidates its GUID and disables its link.
 #. The guest's memory is copied to the destination while it runs without its
@@ -60,26 +75,27 @@ Requirements
 Nova
 ~~~~
 
-Set this on every compute host that can receive instances with InfiniBand
-ports:
+Leave ``[compute] live_migration_wait_for_vif_plug`` at its default,
+``True``. Before it starts copying a guest, Nova then waits for a
+``network-vif-plugged`` event from every port of the instance, which
+``neutron-mlnx-agent`` and ``eswitchd`` on the destination host send for an
+InfiniBand port once its virtual function is plugged there. Both must be
+upgraded to a version that does this, and restarted, on every compute host
+that can receive instances with InfiniBand ports: restart ``eswitchd``
+before ``neutron-mlnx-agent``, or together with it. With an older
+``eswitchd``, ``neutron-mlnx-agent`` logs a warning that it can't tell when
+the virtual function is plugged, nothing sends the event, and every live
+migration fails when ``[DEFAULT] vif_plugging_timeout`` expires. The agent
+notices an upgraded ``eswitchd`` within a minute.
 
-.. code-block:: ini
-
-   [compute]
-   live_migration_wait_for_vif_plug = False
-
-Before it starts copying a guest, Nova waits for a ``network-vif-plugged``
-event from every port of the instance, if this option is ``True`` (its
-default) on the destination host. Nothing sends that event for an InfiniBand
-port before the copy, so with the default every live migration fails when
-``[DEFAULT] vif_plugging_timeout`` expires. Nova reads the option on the
-destination host. With it set to ``False``, Nova also doesn't wait for the
-instance's other ports, such as Open vSwitch or OVN ones, to be set up on the
-destination, so they may briefly lose packets after the migration.
+Earlier versions needed ``live_migration_wait_for_vif_plug = False`` on the
+destination hosts. Once both services are upgraded, remove that setting, so
+that Nova also waits for the instance's other ports, such as Open vSwitch or
+OVN ones, to be set up on the destination before it copies the guest.
 
 Leave ``[DEFAULT] vif_plugging_timeout`` and ``vif_plugging_is_fatal`` at
-their defaults: setting the timeout to 0 instead would also stop Nova waiting
-for ports when it boots instances.
+their defaults as well: setting the timeout to 0 would also stop Nova
+waiting for ports when it boots instances.
 
 Nova also needs, as for booting instances with InfiniBand ports:
 
@@ -105,6 +121,10 @@ Nova only live migrates an instance with a ``direct`` port if Neutron has the
 ``binding-extended`` extension, which ML2 provides. ``neutron-mlnx-agent`` and
 ``eswitchd`` must run on both hosts and map the port's physical network.
 
+Leave ``[DEFAULT] notify_nova_on_port_status_changes`` at its default,
+``True``, in Neutron's configuration: Neutron only sends Nova the
+``network-vif-plugged`` event for the destination host if it is set.
+
 Guests
 ~~~~~~
 
@@ -119,10 +139,8 @@ rebooted.
 DevStack
 --------
 
-Add this to ``local.conf`` on every host that runs ``nova-compute``:
-
-.. code-block:: ini
-
-   [[post-config|$NOVA_CPU_CONF]]
-   [compute]
-   live_migration_wait_for_vif_plug = False
+Nothing more is needed in ``local.conf`` than for booting instances with
+InfiniBand ports. DevStack runs ``neutron-mlnx-agent`` and ``eswitchd`` from
+the same checkout of networking-mlnx, so both send the event. Remove any
+``live_migration_wait_for_vif_plug = False`` left in ``local.conf`` from
+earlier versions.
