@@ -545,6 +545,23 @@ class MlnxEswitchNeutronAgent(object):
             # again, which disables it, without the agent noticing.
             try:
                 self.eswitch.set_link(pci_slot, mac if up else None)
+            except exceptions.GuidMismatch as e:
+                # eswitchd refused, since the VF no longer has the port's
+                # GUID: usually Nova has just released it from the instance
+                # and hasn't unplugged it yet. Its link may still be enabled
+                # by an earlier iteration, so disable it. If that fails, the
+                # VF stays in link_states as down, so that the cleanup above
+                # disables it if it is gone by the next iteration.
+                LOG.warning("Disabling the link of VF %(pci)s, which no "
+                            "longer has the GUID of mac %(mac)s: %(err)s",
+                            {'pci': pci_slot, 'mac': mac, 'err': e})
+                self.link_states[pci_slot] = (mac, False)
+                try:
+                    self.eswitch.set_link(pci_slot)
+                except Exception:
+                    LOG.exception("Failed to disable the link of VF %s",
+                                  pci_slot)
+                continue
             except Exception:
                 LOG.exception("Failed to %(action)s the link of VF %(pci)s",
                               {'action': 'enable' if up else 'disable',

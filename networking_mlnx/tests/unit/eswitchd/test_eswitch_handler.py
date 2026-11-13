@@ -14,6 +14,8 @@
 
 import unittest.mock as mock
 
+from networking_mlnx.eswitchd.common import constants
+from networking_mlnx.eswitchd.common import exceptions
 from networking_mlnx.eswitchd import eswitch_handler
 from networking_mlnx.eswitchd import msg_handler
 from networking_mlnx.internal.netdev_ops import constants as netdev_consts
@@ -78,8 +80,8 @@ class TestESwitchHandler(base.TestCase):
     def test_port_up_with_other_guid_keeps_link_down(self):
         for current_mac in (None, '00:00:00:00:00:00', 'fa:16:3e:00:00:01'):
             self.mgr.get_device_ib_mac.return_value = current_mac
-            self.assertRaises(RuntimeError, self.handler.port_up,
-                              'physnet', PCI_SLOT, MAC)
+            self.assertRaises(exceptions.GuidMismatchException,
+                              self.handler.port_up, 'physnet', PCI_SLOT, MAC)
         self.mgr.set_device_admin_state.assert_not_called()
 
     def test_port_up_without_mac_enables_link(self):
@@ -107,8 +109,22 @@ class TestLinkMessages(base.TestCase):
         msg = {'action': 'port_up', 'fabric': 'physnet',
                'pci_slot': PCI_SLOT, 'mac': MAC}
         response, _handler = self._execute(msg_handler.PortUp, msg,
-                                           RuntimeError('wrong GUID'))
+                                           RuntimeError('broken'))
         self.assertEqual('FAIL', response['status'])
+        self.assertNotIn('error', response)
+
+    def test_port_up_guid_mismatch_is_reported_with_error_code(self):
+        msg = {'action': 'port_up', 'fabric': 'physnet',
+               'pci_slot': PCI_SLOT, 'mac': MAC}
+        with mock.patch.object(msg_handler, 'LOG') as log:
+            response, _handler = self._execute(
+                msg_handler.PortUp, msg,
+                exceptions.GuidMismatchException('wrong GUID'))
+        self.assertEqual('FAIL', response['status'])
+        self.assertEqual(constants.ERROR_GUID_MISMATCH, response['error'])
+        self.assertIn('wrong GUID', response['reason'])
+        log.warning.assert_called_once()
+        log.error.assert_not_called()
 
     def test_port_down_failure_is_reported(self):
         msg = {'action': 'port_down', 'fabric': 'physnet',

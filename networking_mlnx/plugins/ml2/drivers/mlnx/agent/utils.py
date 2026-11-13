@@ -20,6 +20,7 @@ from oslo_serialization import jsonutils
 import six
 
 from networking_mlnx._i18n import _LE
+from networking_mlnx.eswitchd.common import constants as eswitchd_constants
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import comm_utils
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import exceptions
 
@@ -88,6 +89,9 @@ class EswitchUtils(object):
         elif msg['status'] == 'FAIL':
             msg_dict = dict(action=msg['action'], reason=msg['reason'])
             error_msg = _LE("Action %(action)s failed: %(reason)s") % msg_dict
+            if msg.get('error') == eswitchd_constants.ERROR_GUID_MISMATCH:
+                # The caller decides how to log this expected failure.
+                raise exceptions.GuidMismatch(err_msg=error_msg)
         else:
             error_msg = _LE("Unknown operation status %s") % msg['status']
         LOG.error(error_msg)

@@ -16,6 +16,7 @@
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
+from networking_mlnx.eswitchd.common import exceptions
 from networking_mlnx.eswitchd import eswitch_manager
 from networking_mlnx.eswitchd.utils import pci_utils
 from networking_mlnx.internal.netdev_ops import constants as netdev_consts
@@ -116,7 +117,7 @@ class eSwitchHandler(object):
         if mac:
             current_mac = self.eswitch_mgr.get_device_ib_mac(pci_slot)
             if not current_mac or current_mac.lower() != mac.lower():
-                raise RuntimeError(
+                raise exceptions.GuidMismatchException(
                     "VF %s has the GUID of mac %s, not %s" %
                     (pci_slot, current_mac, mac))
         self.eswitch_mgr.set_device_admin_state(

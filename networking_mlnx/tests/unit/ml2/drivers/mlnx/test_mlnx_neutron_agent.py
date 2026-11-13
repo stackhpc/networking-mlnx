@@ -541,6 +541,85 @@ class TestEswitchAgent(base.BaseTestCase):
                          self._sync_link_states(
                              vnics, [self._port(self.VNIC_PORT_1)]))
 
+    def _set_link_guid_mismatch(self, pci_slot, disable_error=None):
+        def set_link(slot, mac=None):
+            if slot == pci_slot:
+                if mac:
+                    raise exceptions.GuidMismatch(err_msg='wrong GUID')
+                if disable_error:
+                    raise disable_error
+
+        self.agent.eswitch.set_link.side_effect = set_link
+
+    def test_sync_link_states_guid_mismatch_disables_link(self):
+        # Nova has released the VF of VNIC_PORT_1 from the instance, so it
+        # no longer has the port's GUID, while the port is still ACTIVE.
+        mac, pci_slot = self.VNIC_PORT_1
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+
+        self._set_link_guid_mismatch(pci_slot)
+        with mock.patch.object(mlnx_eswitch_neutron_agent, 'LOG') as log:
+            self._sync_link_states(
+                [self.VNIC_PORT_1, self.VNIC_PORT_2],
+                [self._port(self.VNIC_PORT_1), self._port(self.VNIC_PORT_2)])
+        self.assertEqual(
+            [mock.call(pci_slot, mac), mock.call(pci_slot)],
+            [c for c in self.agent.eswitch.set_link.call_args_list
+             if c[0][0] == pci_slot])
+        log.warning.assert_called_once()
+        log.exception.assert_not_called()
+        self.assertEqual((mac, False), self.agent.link_states[pci_slot])
+        self.assertEqual((self.VNIC_PORT_2[0], True),
+                         self.agent.link_states[self.VNIC_PORT_2[1]])
+
+    def test_sync_link_states_enables_link_again_after_guid_mismatch(self):
+        # Nova plugged the VF for the same port again, for example on a
+        # hard reboot.
+        mac, pci_slot = self.VNIC_PORT_1
+        self._set_link_guid_mismatch(pci_slot)
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+        self.agent.eswitch.set_link.side_effect = None
+        with mock.patch.object(mlnx_eswitch_neutron_agent, 'LOG') as log:
+            self.assertEqual({pci_slot: mac}, self._sync_link_states(
+                [self.VNIC_PORT_1], [self._port(self.VNIC_PORT_1)]))
+        self.assertEqual((mac, True), self.agent.link_states[pci_slot])
+        log.info.assert_called_once()
+
+    def test_sync_link_states_guid_mismatch_while_rpc_fails(self):
+        # Only links that this agent enabled stay up while the ports can't
+        # be fetched, and a VF that lost the GUID is disabled.
+        mac, pci_slot = self.VNIC_PORT_1
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+        self.agent.plugin_rpc.get_ports_by_vnic_type_and_host.side_effect = (
+            Exception)
+        self._set_link_guid_mismatch(pci_slot)
+        self._sync_link_states([self.VNIC_PORT_1], [])
+        self.assertEqual(
+            [mock.call(pci_slot, mac), mock.call(pci_slot)],
+            self.agent.eswitch.set_link.call_args_list)
+        self.assertEqual((mac, False), self.agent.link_states[pci_slot])
+        # It stays disabled while the ports still can't be fetched.
+        self.agent.eswitch.set_link.side_effect = None
+        self.assertEqual({pci_slot: None}, self._sync_link_states(
+            [self.VNIC_PORT_1], []))
+
+    def test_sync_link_states_guid_mismatch_retries_disable(self):
+        mac, pci_slot = self.VNIC_PORT_1
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+        self._set_link_guid_mismatch(pci_slot, disable_error=Exception())
+        self._sync_link_states([self.VNIC_PORT_1],
+                               [self._port(self.VNIC_PORT_1)])
+        self.assertEqual((mac, False), self.agent.link_states[pci_slot])
+
+        # Nova has unplugged the VF, but without disabling its link.
+        self.agent.eswitch.set_link.side_effect = None
+        self.assertEqual({pci_slot: None}, self._sync_link_states([], []))
+        self.assertNotIn(pci_slot, self.agent.link_states)
+
     def test_treat_devices_added_failure_does_not_report_port_up(self):
         details = [{'device': mac, 'port_id': 'port-%s' % mac,
                     'profile': {'pci_slot': pci_slot},

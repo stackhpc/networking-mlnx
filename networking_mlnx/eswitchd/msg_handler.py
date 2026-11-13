@@ -16,6 +16,7 @@
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
+from networking_mlnx.eswitchd.common import exceptions
 
 LOG = logging.getLogger(__name__)
 
@@ -42,11 +43,19 @@ class BasicMessageHandler(object):
     def validate_vnic_type(self, vnic_type):
         return vnic_type == constants.VIF_TYPE_HOSTDEV
 
-    def build_response(self, status, reason=None, response=None):
+    def build_response(self, status, reason=None, response=None,
+                       error=None):
+        """Build the reply to a request
+
+        :param error: on failure, a code for the cause, for the failures
+                      that the client handles differently from others
+        """
         if status:
             msg = {'status': 'OK', 'response': response}
         else:
             msg = {'status': 'FAIL', 'reason': reason}
+            if error:
+                msg['error'] = error
         return msg
 
 
@@ -180,6 +189,13 @@ class PortUp(BasicMessageHandler):
         mac = self.msg.get('mac')
         try:
             eswitch_handler.port_up(fabric, pci_slot, mac)
+        except exceptions.GuidMismatchException as e:
+            # Expected while Nova detaches or replugs the VF. The agent
+            # disables the link when it gets this error code.
+            LOG.warning("Not enabling the link: %s", e)
+            return self.build_response(
+                False, reason='Port up failed: %s' % e,
+                error=constants.ERROR_GUID_MISMATCH)
         except Exception as e:
             LOG.error("Port up failed - %s", str(e))
             return self.build_response(False, reason='Port up failed')

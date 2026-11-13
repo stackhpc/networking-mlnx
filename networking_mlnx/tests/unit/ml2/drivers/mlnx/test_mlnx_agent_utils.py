@@ -135,3 +135,31 @@ class TestEswitchUtilsSendMsg(base.BaseTestCase):
         self.poller.poll.side_effect = self._poll
         self.assertEqual({'vnic': 'data'}, self.utils.send_msg('msg'))
         self.assertEqual(2, len(self.sockets))
+
+
+class TestEswitchUtilsParseResponse(base.BaseTestCase):
+
+    def setUp(self):
+        super(TestEswitchUtilsParseResponse, self).setUp()
+        self.utils = utils.EswitchUtils('tcp://127.0.0.1:60001', 100)
+        self.log = mock.patch.object(utils, 'LOG').start()
+
+    def _parse(self, **reply):
+        reply.update(status='FAIL', action='port_up', reason='Port up failed')
+        return self.utils.parse_response_msg(jsonutils.dumps(reply))
+
+    def test_failure_raises_operation_failed(self):
+        e = self.assertRaises(exceptions.OperationFailed, self._parse)
+        self.assertNotIsInstance(e, exceptions.GuidMismatch)
+        self.log.error.assert_called_once()
+
+    def test_guid_mismatch_raises_without_logging(self):
+        self.assertRaises(exceptions.GuidMismatch, self._parse,
+                          error='guid_mismatch')
+        self.log.error.assert_not_called()
+
+    def test_unknown_error_code_raises_operation_failed(self):
+        e = self.assertRaises(exceptions.OperationFailed, self._parse,
+                              error='something_else')
+        self.assertNotIsInstance(e, exceptions.GuidMismatch)
+        self.log.error.assert_called_once()
