@@ -157,7 +157,7 @@ The port should be ``ACTIVE`` with ``binding_vif_type`` ``ib_hostdev``, and its
 CirrOS sees the VF as a PCI device (``[15b3:1018]`` for a ConnectX-5 VF in
 ``openstack console log show ib-test``), but has no InfiniBand drivers. To
 use the VF from the guest, use an image with the ``mlx5_ib`` and ``ib_ipoib``
-kernel modules and ``rdma-core``.
+kernel modules and ``rdma-core``, such as the one built in the next section.
 
 cloud-init 24.4 can fail with ``Unable to find a system nic`` when an instance
 boots with the InfiniBand port attached, because the port's MAC address in
@@ -166,6 +166,65 @@ CirrOS does not use cloud-init. With cloud-init images, boot without the port
 and attach it after the first boot::
 
     openstack server add port ib-test ib-port
+
+Guest image with InfiniBand drivers
+-----------------------------------
+
+The Rocky Linux 10 GenericCloud image has ``mlx5_core`` but not ``mlx5_ib``
+or ``ib_ipoib``, which are in the ``kernel-modules`` package. To build an
+image with them, download the image and customise it with ``virt-customize``.
+Install ``kernel-modules`` for the kernel that the image boots, rather than
+the latest one, so that the modules match it::
+
+    sudo dnf install -y guestfs-tools
+    export LIBGUESTFS_BACKEND=direct
+
+    base=https://dl.rockylinux.org/pub/rocky/10/images/x86_64
+    image=Rocky-10-GenericCloud-Base.latest.x86_64.qcow2
+    curl -O $base/$image -O $base/$image.CHECKSUM
+    sha256sum -c $image.CHECKSUM
+
+    cp $image rocky10-ib.qcow2
+    kernel=$(virt-ls -a rocky10-ib.qcow2 /lib/modules)
+    conf=/etc/modules-load.d/infiniband.conf
+    virt-customize -a rocky10-ib.qcow2 \
+        --run-command "dnf install -y kernel-modules-$kernel rdma-core infiniband-diags" \
+        --append-line $conf:mlx5_ib --append-line $conf:ib_ipoib \
+        --append-line $conf:ib_umad --append-line $conf:ib_uverbs \
+        --run-command "dnf clean all" \
+        --truncate /etc/machine-id
+
+    openstack image create rocky-10-infiniband --file rocky10-ib.qcow2 \
+        --disk-format qcow2 --container-format bare --public
+
+Truncating ``/etc/machine-id`` makes each instance generate its own machine
+ID at first boot.
+
+Rocky Linux 10 needs an x86-64-v3 CPU, and DevStack configures Nova with the
+older ``Nehalem`` CPU model by default. To give instances a CPU model based on
+the host's, add this to ``local.conf`` before running ``stack.sh``::
+
+    [[local|localrc]]
+    LIBVIRT_CPU_MODE=host-model
+
+The image's virtual size is 10 GiB, so use a flavor with at least that much
+disk, such as ``m1.small``. Replace the CirrOS instance with one booted from
+the image without the InfiniBand port, then attach the port, as described
+above. Use a keypair to log in as the ``rocky`` user::
+
+    openstack server delete ib-test --wait
+    openstack server create ib-test --flavor m1.small \
+        --image rocky-10-infiniband --network private --key-name mykey --wait
+    openstack server add port ib-test ib-port
+
+The IPoIB interface, named after the VF's PCI slot (for example ``ibs7``),
+then comes up, but the InfiniBand subnet has no DHCP, so give it the port's
+fixed IP address, from ``openstack port show ib-port -c fixed_ips``, in the
+guest::
+
+    sudo ip addr add 172.26.0.54/24 dev ibs7
+
+This address does not persist across reboots.
 
 Tempest tests
 -------------
