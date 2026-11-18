@@ -14,9 +14,7 @@
 #    under the License.
 
 import functools
-import html.parser
 import re
-from urllib import parse
 
 from neutron.db import provisioning_blocks
 from neutron.plugins.ml2 import db as ml2_db
@@ -59,23 +57,6 @@ JOB_LINK_RE = re.compile(r'[a-zA-Z0-9/]+')
 MAX_JOB_ID_LENGTH = 36
 
 
-class _LinkParser(html.parser.HTMLParser):
-    """Find the target of the last link in an HTML page
-
-    The code that NEO needed, and that this replaces, used the page's last
-    start tag, if it was a link.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.href = None
-
-    def handle_starttag(self, tag, attrs):
-        href = dict(attrs).get('href') if tag == 'a' else None
-        if href:
-            self.href = href
-
-
 def _get_job_id(response):
     """Return the job that a response to a request names, or None
 
@@ -87,24 +68,14 @@ def _get_job_id(response):
         return response.json()
     except ValueError:
         pass
-    parser = _LinkParser()
-    parser.feed(response.text)
-    parser.close()
-    link = parser.href
-    if not link or not JOB_LINK_RE.fullmatch(link):
-        link = None
-    else:
-        # The job is fetched relative to the controller's URL, so remove
-        # its path, such as /ufmRestV3, from a link that starts with it.
-        prefix = parse.urlsplit(cfg.CONF.sdn.url).path.rstrip('/') + '/'
-        if prefix != '/' and link.startswith(prefix):
-            link = link[len(prefix):]
-        link = link.strip('/')
-    if link and len(link) <= MAX_JOB_ID_LENGTH:
-        return link
-    # The caller logs the response.
-    LOG.debug("SDN Controller response is neither JSON nor HTML that links "
-              "to a usable job")
+
+    try:
+        return response.headers['Location']
+    except KeyError:
+        pass
+
+    LOG.debug("SDN Controller response is neither JSON nor has Location set "
+              "in its headers")
     return None
 
 
