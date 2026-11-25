@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 import datetime
+import html.parser
+import re
 import unittest.mock as mock
 
 from neutron.db import provisioning_blocks
@@ -813,6 +815,91 @@ class SdnDriverTestCase(SdnConfigBase):
             row = db.get_all_db_rows(self.context)[0]
             self.assertEqual(sdn_const.COMPLETED, row.state)
             self._db_cleanup()
+
+    def test_get_job_id(self):
+        cases = [
+            ('"app/jobs/1"', 'app/jobs/1'),
+            ('<html><body><p>Created</p><a href="/app/jobs/1">job</a>'
+             '<a href="/app/jobs/2">other</a></body></html>', 'app/jobs/2'),
+            ('<a href="/app/jobs/1">job</a><br>', 'app/jobs/1'),
+            ("<A HREF='/app/jobs/1'>job</A>", 'app/jobs/1'),
+            # A link from the server's root, with the controller's path.
+            ('<a href="/ufmRestV3/app/jobs/1">job</a>', 'app/jobs/1'),
+            # Too long for the journal's job_id column.
+            ('<a href="/app/jobs/%s">job</a>' % ('1' * 30), None),
+            ('<html>no job link</html>', None),
+            ('<a>no href</a>', None),
+            # Only a path is added to the controller's URL.
+            ('<a href="http://other/app/jobs/1">job</a>', None),
+            ('<a href="../../app/jobs/1">job</a>', None),
+            ('<a href="/app/jobs/1?x=1">job</a>', None),
+            ('', None),
+        ]
+        for text, job_id in cases:
+            self.assertEqual(job_id, journal._get_job_id(
+                self._response(requests.codes.accepted, text)), text)
+
+    @staticmethod
+    def _old_html_job_id(text):
+        """The job link that the code NEO needed found, or None"""
+        parser = html.parser.HTMLParser()
+        parser.feed(text)
+        parser.handle_starttag('a', [])
+        url = parser.get_starttag_text()
+        match = url and re.match(r'<a href="([a-zA-Z0-9\/]+)">', url)
+        return match.group(1) if match else None
+
+    def test_get_job_id_finds_links_old_code_did(self):
+        # Whatever page the old code found a job link in, so does this.
+        pages = [
+            '<a href="/app/jobs/1">job</a>',
+            '<html><head><title>Accepted</title></head><body><h1>Job</h1>'
+            '<p>Created <a href="/app/jobs/12">job 12</a></p></body></html>',
+            '<p>See <a href="app/jobs/3">this</a> and '
+            '<a href="/app/jobs/4">that</a>.</p>',
+            '<a href="/ufmRestV3/app/jobs/5">job</a>',
+            '<a href="/app/jobs/6">job</a><br>',
+            '<a class="job" href="/app/jobs/7">job</a>',
+            '<a href="/app/jobs/8?x">job</a>',
+        ]
+        found = 0
+        for page in pages:
+            old = self._old_html_job_id(page)
+            new = journal._get_job_id(
+                self._response(requests.codes.accepted, page))
+            if old:
+                found += 1
+                self.assertEqual(old.strip('/').replace('ufmRestV3/', ''),
+                                 new, page)
+        self.assertEqual(4, found)
+
+    def test_sync_pending_rows_html_job_link(self):
+        # UFM answers a port's POST with an HTML page that links to its job.
+        self.conf.set_override('url', 'https://ufm/ufmRestV3',
+                               sdn_const.GROUP_OPT)
+        self.thread = journal.SdnJournalThread()
+        self._call_operation_object(sdn_const.POST, sdn_const.PORT)
+        html = ('<html><body><a href="/ufmRestV3/app/jobs/7">job</a>'
+                '</body></html>')
+        with mock.patch('requests.request',
+                        return_value=self._response(requests.codes.accepted,
+                                                    html)):
+            self.thread._sync_pending_rows(self.context, False)
+
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.MONITORING, row.state)
+        self.assertEqual('app/jobs/7', row.job_id)
+
+        # The job is checked at the controller's URL.
+        with mock.patch('requests.request',
+                        return_value=self._response(
+                            requests.codes.ok,
+                            '{"Status": "Completed"}')) as request:
+            self.thread._sync_progress_rows(self.context)
+        self.assertEqual('https://ufm/ufmRestV3/app/jobs/7',
+                         request.call_args.kwargs['url'])
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.COMPLETED, row.state)
 
     def test_sync_pending_rows_delete_without_job_id_is_retried(self):
         # Nothing shows that the deletion was done, so it is sent again.

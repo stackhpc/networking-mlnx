@@ -13,7 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import html.parser
+import re
 import threading
+from urllib import parse
 
 from neutron.db import provisioning_blocks
 from neutron.plugins.ml2 import db as ml2_db
@@ -40,6 +43,60 @@ LOG = logging.getLogger(__name__)
 # The longest time to wait before sending a failed request again, unless
 # [sdn] sync_timeout is longer.
 MAX_RETRY_DELAY = 300
+
+
+# The job links that UFM's HTML replies contain, such as /app/jobs/1. They
+# are added to the controller's URL, so nothing else is accepted.
+JOB_LINK_RE = re.compile(r'[a-zA-Z0-9/]+')
+# The length of the sdn_journal.job_id column.
+MAX_JOB_ID_LENGTH = 36
+
+
+class _LinkParser(html.parser.HTMLParser):
+    """Find the target of the last link in an HTML page
+
+    The code that NEO needed, and that this replaces, used the page's last
+    start tag, if it was a link.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.href = None
+
+    def handle_starttag(self, tag, attrs):
+        href = dict(attrs).get('href') if tag == 'a' else None
+        if href:
+            self.href = href
+
+
+def _get_job_id(response):
+    """Return the job that a response to a request names, or None
+
+    UFM answers with the job as JSON, except for some requests, such as a
+    port's POST, which it answers with an HTML page that links to the job.
+    A link is returned relative to the controller's URL ([sdn] url).
+    """
+    try:
+        return response.json()
+    except ValueError:
+        pass
+    parser = _LinkParser()
+    parser.feed(response.text)
+    parser.close()
+    link = parser.href
+    if not link or not JOB_LINK_RE.fullmatch(link):
+        link = None
+    else:
+        # The job is fetched relative to the controller's URL, so remove
+        # its path, such as /ufmRestV3, from a link that starts with it.
+        prefix = parse.urlsplit(cfg.CONF.sdn.url).path.rstrip('/') + '/'
+        if prefix != '/' and link.startswith(prefix):
+            link = link[len(prefix):]
+        link = link.strip('/')
+    if link and len(link) <= MAX_JOB_ID_LENGTH:
+        return link
+    LOG.error("Failed to extract job_id from %s", response.text[:200])
+    return None
 
 
 def record(context, object_type, object_uuid, operation, data):
@@ -303,11 +360,7 @@ class SdnJournalThread(object):
                     db.update_db_row_state(context, row, sdn_const.COMPLETED)
                 else:
                     # update in progress and job_id
-                    job_id = None
-                    try:
-                        job_id = response.json()
-                    except ValueError as e:
-                        LOG.error("Failed to extract job_id %s", e)
+                    job_id = _get_job_id(response)
 
                     if job_id:
                         db.update_db_row_job_id(
