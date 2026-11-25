@@ -498,6 +498,30 @@ def retry_failed_row(context, row_id):
     return row
 
 
+@db_api.CONTEXT_READER
+def get_failed_port_deletes(context, older_than):
+    """Return the failed port deletions last tried before older_than ago
+
+    :param older_than: a datetime.timedelta
+    """
+    now = context.session.execute(func.now()).scalar()
+    return context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.state == sdn_const.FAILED,
+        sdn_journal_db.SdnJournal.object_type == sdn_const.PORT,
+        sdn_journal_db.SdnJournal.operation == sdn_const.DELETE,
+        sdn_journal_db.SdnJournal.last_retried <= now - older_than).order_by(
+        asc(sdn_journal_db.SdnJournal.last_retried)).all()
+
+
+@db_api.retry_if_session_inactive()
+@db_api.CONTEXT_WRITER
+def touch_failed_row(context, row_id):
+    """Set a failed row's last_retried to now"""
+    context.session.query(sdn_journal_db.SdnJournal).filter_by(
+        id=row_id, state=sdn_const.FAILED).update(
+        {'last_retried': func.now()}, synchronize_session=False)
+
+
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def delete_failed_row(context, row_id):

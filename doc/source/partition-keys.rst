@@ -127,8 +127,13 @@ For example, to list the IDs of the failed rows::
     neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
         journal list --state failed -f value -c ID
 
-To recover a failed port deletion, once the controller is working again,
-send it again::
+The maintenance task sends a failed port deletion again an hour after it
+last failed, or after the task last refused to send it, unless that could
+undo something newer, as described below. ``[sdn]
+failed_port_delete_retry_interval`` sets the delay in seconds, and ``-1``
+disables it. The task also refuses rows that don't record the port's GUID and
+network, which rows from earlier releases may not. To send a row again at
+once, for example when the controller is working again::
 
     neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
         journal retry ROW_ID
@@ -137,12 +142,12 @@ Once ``list --object PORT_ID`` shows the row ``completed``, or no longer
 shows it, the controller has removed the GUID. If the row fails again, look
 at ``neutron-periodic-workers``' log for the controller's answer.
 
-``retry`` only sends port deletions, and refuses one that could undo
-something newer: if the journal has a newer row of the port, if the port is
-bound again, or if another port with the same GUID is bound on the same
-network. Delete such a row, or one that the controller can't complete, only
-after checking on the controller that the port's GUID is in no partition key
-that it shouldn't be in::
+``retry`` and the maintenance task only send port deletions, and refuse one
+that could undo something newer: if the journal has a newer row of the port,
+if the port is bound again, or if another port with the same GUID is bound on
+the same network. Delete such a row, or one that the controller can't
+complete, only after checking on the controller that the port's GUID is in no
+partition key that it shouldn't be in::
 
     neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
         journal delete ROW_ID

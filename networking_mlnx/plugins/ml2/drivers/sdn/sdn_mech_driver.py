@@ -197,11 +197,14 @@ class SDNMechanismDriver(api.MechanismDriver):
         # operations :
         # (1) JournalCleanup - Delete completed rows from journal
         # (2) CleanupProcessing - Mark orphaned processing rows to pending
+        # (3) JournalRecovery - Send failed port deletions again
         cleanup_obj = cleanup.JournalCleanup()
         self.maintenance_worker.register_operation(
             cleanup_obj.delete_completed_rows)
         self.maintenance_worker.register_operation(
             cleanup_obj.cleanup_processing_rows)
+        self.maintenance_worker.register_operation(
+            cleanup.JournalRecovery().retry_failed_port_deletes)
 
     @staticmethod
     def _record_in_journal(context, object_type, operation, data=None):

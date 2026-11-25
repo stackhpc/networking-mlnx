@@ -57,6 +57,17 @@ sdn_opts = [
                           "maintenance_interval by the cleanup thread."
                           "To disable completed rows deletion "
                           "value should be -1")),
+        cfg.IntOpt('failed_port_delete_retry_interval', default=3600,
+                   min=-1,
+                   help=_("How long a failed port deletion waits, in "
+                          "seconds, before the maintenance task sends it to "
+                          "the SDN controller again, unless that could undo "
+                          "something newer. Until the controller has done "
+                          "it, other ports with the same GUID can't be "
+                          "added to a partition key. Checked every "
+                          "maintenance_interval. -1 disables it, leaving "
+                          "failed port deletions to neutron-mlnx-manage "
+                          "journal retry.")),
         cfg.IntOpt('processing_timeout', default='100',
                    help=_("Time in seconds to wait before a "
                           "processing row is marked back to pending.")),
