@@ -62,6 +62,13 @@ def context_validator(context_type=None):
             if segments and getattr(instance, "check_segments", None):
                 if instance.check_segments(segments):
                     return func(instance, context, *args, **kwargs)
+            LOG.debug("%(function)s: ignoring %(id)s, which has no %(types)s "
+                      "segment: %(segments)s",
+                      {'function': func.__name__,
+                       'id': context.current.get('id'),
+                       'types': '/'.join(getattr(
+                           instance, 'supported_network_types', ())),
+                       'segments': segments})
         return wrapper
     return real_decorator
 
@@ -71,10 +78,10 @@ def error_handler(func):
     def wrapper(instance, *args, **kwargs):
         try:
             return func(instance, *args, **kwargs)
-        except Exception as e:
-            LOG.error("%(function_name)s %(exception_desc)s",
-                      {'function_name': func.__name__,
-                      'exception_desc': str(e)})
+        except Exception:
+            # Include the traceback: for bind_port, this is the only sign of
+            # why the port wasn't bound.
+            LOG.exception("%s failed", func.__name__)
     return wrapper
 
 
@@ -225,9 +232,16 @@ class SDNMechanismDriver(api.MechanismDriver):
     @context_validator()
     @error_handler
     def bind_port(self, context):
-        if not self._is_allowed_physical_networks(context.network):
-            return
         port_dic = context.current
+        if not self._is_allowed_physical_networks(context.network):
+            LOG.debug("Not binding port %(port)s: not every segment of "
+                      "network %(network)s is on one of the physical "
+                      "networks %(physnets)s: %(segments)s",
+                      {'port': port_dic['id'],
+                       'network': port_dic['network_id'],
+                       'physnets': self.allowed_physical_networks,
+                       'segments': context.network.network_segments})
+            return
         # Ports are sent to the controller when their binding is committed,
         # see update_port_precommit().
         segments = context.network.network_segments
@@ -245,6 +259,16 @@ class SDNMechanismDriver(api.MechanismDriver):
                 # added it to the partition key. Ironic waits for that
                 # before it powers the node on.
                 status = None
+            LOG.info("Binding port %(port)s on host %(host)s to %(type)s "
+                     "segment %(segment)s on physical network %(physnet)s, "
+                     "%(status)s",
+                     {'port': port_dic['id'], 'host': context.host,
+                      'type': segment[api.NETWORK_TYPE],
+                      'segment': segment[api.ID],
+                      'physnet': segment.get(api.PHYSICAL_NETWORK),
+                      'status': 'ACTIVE' if status else
+                      'DOWN until the SDN Controller adds it to its '
+                      'partition key'})
             context.set_binding(segment[api.ID],
                                 self.vif_type,
                                 self.vif_details,
@@ -302,6 +326,12 @@ class SDNMechanismDriver(api.MechanismDriver):
             # another, and sends it once that binding is committed.
             if self._was_sent(orig_port_dict, context.original_vif_type,
                               context.original_bottom_bound_segment):
+                LOG.info("Port %(port)s is no longer bound on host "
+                         "%(host)s (vif_type now %(vif_type)s), queuing its "
+                         "deletion from the SDN Controller",
+                         {'port': orig_port_dict['id'],
+                          'host': context.original_host,
+                          'vif_type': context.vif_type})
                 SDNMechanismDriver._record_in_journal(
                     context, sdn_const.PORT, sdn_const.DELETE, orig_port_dict)
                 self._remove_pkey_block(context)
@@ -343,6 +373,8 @@ class SDNMechanismDriver(api.MechanismDriver):
             port_dic[NETWORK_QOS_POLICY] = (
                 self._get_network_qos_policy(context,
                                              port_dic['network_id']))
+            LOG.info("Port %s is being deleted, queuing its deletion from "
+                     "the SDN Controller", port_dic['id'])
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, port_dic)
 
@@ -462,9 +494,18 @@ class SDNMechanismDriver(api.MechanismDriver):
         This runs in the transaction that commits the binding, so if it
         fails, the binding fails too.
         """
+        port_id = context.current['id']
         self._validate_client_id(context)
         segment = context.bottom_bound_segment
         if not self._is_synced_binding(context.vif_type, segment):
+            LOG.debug("Not sending port %(port)s to the SDN Controller: "
+                      "[sdn] sync_enabled is %(sync)s, and its %(vif_type)s "
+                      "binding on host %(host)s is to segment %(segment)s, "
+                      "of types %(types)s",
+                      {'port': port_id, 'sync': self._is_sdn_sync_enabled(),
+                       'vif_type': context.vif_type, 'host': context.host,
+                       'segment': segment,
+                       'types': self.supported_network_types})
             return
         if (context.original_host and
                 context.original_host != context.host and
@@ -472,6 +513,11 @@ class SDNMechanismDriver(api.MechanismDriver):
             # A binding activated on another host replaces the old one, to
             # the same network. ML2 doesn't give the old binding's levels
             # here.
+            LOG.info("Port %(port)s moved from host %(old)s to %(new)s, "
+                     "queuing the deletion of its old binding from the SDN "
+                     "Controller",
+                     {'port': port_id, 'old': context.original_host,
+                      'new': context.host})
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, context.original)
         if not self._get_client_id_from_port(context.current):
@@ -483,12 +529,24 @@ class SDNMechanismDriver(api.MechanismDriver):
                     "Port %s has no DHCP client ID, so the SDN controller "
                     "can't add it to its partition key") %
                     context.current['id'])
+            LOG.debug("Not sending port %s to the SDN Controller: it has "
+                      "no DHCP client ID", port_id)
             return
+        hold = (segment[api.NETWORK_TYPE] == neutron_const.TYPE_VLAN and
+                (context.vif_type == mech_mlnx.VIF_TYPE_IB_HOSTDEV or
+                 self._is_ib_baremetal_port(context.current)))
+        LOG.info("Queuing port %(port)s, bound on host %(host)s to %(type)s "
+                 "segment %(segment)s with DHCP client ID %(client_id)s, to "
+                 "be sent to the SDN Controller%(hold)s",
+                 {'port': port_id, 'host': context.host,
+                  'type': segment[api.NETWORK_TYPE],
+                  'segment': segment[api.ID],
+                  'client_id': self._get_client_id_from_port(context.current),
+                  'hold': ', keeping it DOWN until the controller has added '
+                          'it to its partition key' if hold else ''})
         SDNMechanismDriver._record_in_journal(
             context, sdn_const.PORT, sdn_const.POST, context.current)
-        if (segment[api.NETWORK_TYPE] == neutron_const.TYPE_VLAN and
-                (context.vif_type == mech_mlnx.VIF_TYPE_IB_HOSTDEV or
-                 self._is_ib_baremetal_port(context.current))):
+        if hold:
             provisioning_blocks.add_provisioning_component(
                 context._plugin_context, context.current['id'],
                 resources.PORT, sdn_const.PROVISIONING_ENTITY)
@@ -517,26 +575,46 @@ class SDNMechanismDriver(api.MechanismDriver):
                         to bind on.
         :return: True if port binding is supported by the driver else False.
         """
+        reason = self._get_unsupported_binding_reason(port, segment)
+        if reason:
+            LOG.debug("Not binding port %(port)s to segment %(segment)s: "
+                      "%(reason)s",
+                      {'port': port['id'], 'segment': segment[api.ID],
+                       'reason': reason})
+            return False
+        return True
+
+    def _get_unsupported_binding_reason(self, port, segment):
+        """Return why the driver can't bind the port, or None if it can"""
         vnic_type = port[portbindings.VNIC_TYPE]
         if vnic_type in self.supported_vnic_types:
             if not self._get_client_id_from_port(port):
                 # Only InfiniBand ports, which have a DHCP client ID, can be
                 # put in a partition by the SDN controller.
-                return False
+                return "the %s port has no DHCP client ID" % vnic_type
             if (segment[api.NETWORK_TYPE] != neutron_const.TYPE_FLAT and
                     not self._is_sdn_sync_enabled()):
                 # Don't bind to non-flat networks if not syncing to an SDN
                 # controller.
-                return False
-            return True
+                return ("the segment is %s, and only flat segments are "
+                        "bound while [sdn] sync_enabled is false" %
+                        segment[api.NETWORK_TYPE])
+            return None
 
-        if (vnic_type == portbindings.VNIC_NORMAL and
-                self.bind_normal_ports and
-                port['device_owner'] in self.supported_device_owners and
-                segment.get('physical_network') in
+        if vnic_type != portbindings.VNIC_NORMAL:
+            return "VNIC type %s is not supported" % vnic_type
+        if not self.bind_normal_ports:
+            return "[sdn] bind_normal_ports is false"
+        if port['device_owner'] not in self.supported_device_owners:
+            return ("device owner %s is not one that bind_normal_ports "
+                    "applies to" % port['device_owner'])
+        if (segment.get('physical_network') not in
                 self.bind_normal_ports_physnets):
-            return True
-        return False
+            return ("physical network %s is not in [sdn] "
+                    "bind_normal_ports_physnets %s" %
+                    (segment.get('physical_network'),
+                     self.bind_normal_ports_physnets))
+        return None
 
     def check_segment(self, segment):
         """Verify if a segment is valid for the SDN MechanismDriver.

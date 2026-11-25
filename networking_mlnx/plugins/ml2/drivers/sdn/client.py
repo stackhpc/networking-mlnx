@@ -110,12 +110,31 @@ class SdnRestClient(object):
             raise sdn_exc.SDNUnreachableError(msg=e) from e
         return self._check_response(response, method)
 
+    @classmethod
+    def describe_response(cls, response, full=False):
+        """Describe a response for the logs
+
+        Includes what is needed to tell why a response couldn't be used,
+        for example that the controller answered with an HTML page and put
+        the job in the Location header. The body is truncated unless full
+        is set.
+        """
+        text = response.text if full else response.text[:cls.MAX_ERROR_TEXT]
+        return ("HTTP %(status)s, Content-Type %(type)s, Location "
+                "%(location)s: %(text)s" %
+                {'status': response.status_code,
+                 'type': response.headers.get('Content-Type'),
+                 'location': response.headers.get('Location'),
+                 'text': text})
+
     def _check_response(self, response, method):
+        if LOG.isEnabledFor(log.DEBUG):
+            LOG.debug("Response to %(method)s %(url)s: %(response)s",
+                      {'method': method, 'url': response.url,
+                       'response': self.describe_response(response,
+                                                          full=True)})
         try:
-            LOG.debug("request status: %d", response.status_code)
             request_found = True
-            if response.text:
-                LOG.debug("request text: %s", response.text)
             if (response.status_code == requests.codes.not_found and
                 method == sdn_const.DELETE):
                 request_found = False
@@ -123,10 +142,10 @@ class SdnRestClient(object):
                 response.status_code != requests.codes.not_implemented):
                 response.raise_for_status()
         except requests.exceptions.HTTPError as e:
+            msg = '%s: %s' % (e, response.text[:self.MAX_ERROR_TEXT])
             if response.status_code in self.REJECTED_STATUS_CODES:
-                raise sdn_exc.SDNRequestError(
-                    msg='%s: %s' % (e, response.text[:self.MAX_ERROR_TEXT]))
-            raise sdn_exc.SDNConnectionError(msg=e)
+                raise sdn_exc.SDNRequestError(msg=msg)
+            raise sdn_exc.SDNConnectionError(msg=msg)
         except Exception as e:
             raise sdn_exc.SDNConnectionError(msg=e)
         return response

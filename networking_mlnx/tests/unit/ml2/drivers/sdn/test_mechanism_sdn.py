@@ -1650,8 +1650,53 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         # to other drivers otherwise.
         context = self._baremetal(self._get_mock_bind_operation_context(),
                                   client_id=None)
-        self.mech.bind_port(context)
+        with self.assertLogs(sdn_mech_driver.__name__, 'DEBUG') as logs:
+            self.mech.bind_port(context)
         context.set_binding.assert_not_called()
+        # The log says why.
+        self.assertIn('has no DHCP client ID', '\n'.join(logs.output))
+
+    def test_bind_port_logs_why_not_bound(self):
+        port = {'id': 'port-id', 'device_owner': 'compute:nova',
+                'binding:vnic_type': portbindings.VNIC_NORMAL}
+        segment = {'id': 'segment-id', 'network_type': constants.TYPE_VLAN,
+                   'physical_network': 'physnet1'}
+        cases = [
+            (False, ['physnet1'], 'bind_normal_ports is false'),
+            (True, ['physnet1'], 'device owner compute:nova'),
+        ]
+        for bind_normal, physnets, reason in cases:
+            self.mech.bind_normal_ports = bind_normal
+            self.mech.bind_normal_ports_physnets = physnets
+            with self.assertLogs(sdn_mech_driver.__name__, 'DEBUG') as logs:
+                self.assertFalse(
+                    self.mech._is_port_binding_supported(port, segment))
+            self.assertIn(reason, '\n'.join(logs.output))
+        port['device_owner'] = constants.DEVICE_OWNER_DHCP
+        self.mech.bind_normal_ports_physnets = ['physnet2']
+        with self.assertLogs(sdn_mech_driver.__name__, 'DEBUG') as logs:
+            self.assertFalse(
+                self.mech._is_port_binding_supported(port, segment))
+        self.assertIn('physnet1 is not in', '\n'.join(logs.output))
+        port['binding:vnic_type'] = portbindings.VNIC_DIRECT
+        with self.assertLogs(sdn_mech_driver.__name__, 'DEBUG') as logs:
+            self.assertFalse(
+                self.mech._is_port_binding_supported(port, segment))
+        self.assertIn('VNIC type direct', '\n'.join(logs.output))
+
+    def test_bind_port_logs_binding(self):
+        with self.assertLogs(sdn_mech_driver.__name__, 'INFO') as logs:
+            self._bind_baremetal()
+        self.assertIn('DOWN until the SDN Controller',
+                      '\n'.join(logs.output))
+
+    def test_bind_port_error_logs_traceback(self):
+        context = self._baremetal(self._get_mock_bind_operation_context())
+        with mock.patch.object(self.mech, '_is_allowed_physical_networks',
+                               side_effect=RuntimeError('boom')), \
+                self.assertLogs(sdn_mech_driver.__name__, 'ERROR') as logs:
+            self.mech.bind_port(context)
+        self.assertIn('Traceback', '\n'.join(logs.output))
 
     def test_host_update_of_ib_baremetal_port_waits_for_binding(self):
         # Ironic sets the host, client-id and local link information in one
@@ -2078,6 +2123,45 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         set_status = self._sync_pending(
             self._response(requests.codes.ok, 'null'))
         self._assert_port_failed(port_id, set_status)
+
+    def test_post_with_html_response_logs_response(self):
+        # The log must show why no job was found, for example that the
+        # controller answered with HTML and put the job in a header.
+        port_id, _row = self._make_blocked_port()
+        response = self._response(requests.codes.accepted,
+                                  '<html>Job created</html>')
+        response.headers['Content-Type'] = 'text/html'
+        response.headers['Location'] = '/ufmRestV3/jobs/1'
+        with self.assertLogs(journal.__name__, 'ERROR') as logs:
+            set_status = self._sync_pending(response)
+        self._assert_port_failed(port_id, set_status)
+        logged = '\n'.join(logs.output)
+        for text in ('HTTP 202', 'text/html', '/ufmRestV3/jobs/1',
+                     '<html>Job created</html>', port_id):
+            self.assertIn(text, logged)
+
+    def test_moved_port_logs_why_row_does_not_hold_it(self):
+        port_id, _row = self._make_blocked_port(row_host='other-host')
+        with self.assertLogs(journal.__name__, 'DEBUG') as logs:
+            self._sync_pending(self._response(requests.codes.ok, 'null'))
+        self.assertIn('the port is now bound to host %s, not other-host' %
+                      self.HOST, '\n'.join(logs.output))
+
+    def test_retry_logs_count(self):
+        port_id, _row = self._make_blocked_port()
+        with self.assertLogs(journal.__name__, 'INFO') as logs:
+            self._sync_pending(
+                self._response(requests.codes.service_unavailable))
+        self.assertIn('(retry 1 of unlimited)', '\n'.join(logs.output))
+
+        self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
+        self.thread = journal.SdnJournalThread()
+        self._db_cleanup()
+        port_id, _row = self._make_blocked_port()
+        with self.assertLogs(journal.__name__, 'ERROR') as logs:
+            self._sync_pending(
+                self._response(requests.codes.service_unavailable))
+        self.assertIn('Giving up on POST', '\n'.join(logs.output))
 
     def test_post_failing_after_retries_fails_port(self):
         self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)

@@ -236,3 +236,27 @@ class TestClient(base.TestCase):
             self.assertRaises(exceptions.SDNConnectionError,
                               self.client._check_response,
                               self._response(status_code), sdn_const.POST)
+
+    def test_check_response_retryable_includes_text(self):
+        e = self.assertRaises(exceptions.SDNConnectionError,
+                              self.client._check_response,
+                              self._response(500, 'Database is locked'),
+                              sdn_const.POST)
+        self.assertIn('Database is locked', str(e))
+
+    def test_describe_response(self):
+        response = self._response(202, '<html>' + 'x' * 10000)
+        response.headers['Content-Type'] = 'text/html'
+        response.headers['Location'] = '/ufmRestV3/jobs/1'
+        description = self.client.describe_response(response)
+        self.assertIn('HTTP 202', description)
+        self.assertIn('text/html', description)
+        self.assertIn('/ufmRestV3/jobs/1', description)
+        self.assertLess(len(description), 1000)
+        self.assertIn('x' * 10000,
+                      self.client.describe_response(response, full=True))
+
+    def test_describe_response_without_headers(self):
+        self.assertEqual(
+            'HTTP 200, Content-Type None, Location None: null',
+            self.client.describe_response(self._response(200, 'null')))
