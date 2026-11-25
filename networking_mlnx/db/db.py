@@ -14,9 +14,11 @@
 #    under the License.
 import datetime
 
+from neutron.db.extra_dhcp_opt import models as edo_models
 from neutron.db.models import provisioning_block as pb_model
 from neutron.db import models_v2
 from neutron.plugins.ml2 import models as ml2_models
+from neutron_lib.api.definitions import portbindings
 from neutron_lib import constants as n_const
 from neutron_lib.db import api as db_api
 from oslo_serialization import jsonutils
@@ -29,6 +31,7 @@ from sqlalchemy import or_
 from networking_mlnx.db.models import sdn_journal_db
 from networking_mlnx.db.models import sdn_maintenance_db
 from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
+from networking_mlnx.plugins.ml2.drivers.sdn import exceptions as sdn_exc
 
 # States of operations that the SDN controller may not have finished yet.
 # Operations that depend on them must wait, including while the controller
@@ -337,6 +340,175 @@ def update_pending_db_row_retry(context, row, retry_count):
     else:
         row.retry_count += 1
         _update_db_row_state(context.session, row, sdn_const.PENDING)
+
+
+@db_api.CONTEXT_READER
+def get_rows(context, state=None, object_uuid=None):
+    """Return the journal's rows, oldest first"""
+    query = context.session.query(sdn_journal_db.SdnJournal)
+    if state:
+        query = query.filter_by(state=state)
+    if object_uuid:
+        query = query.filter_by(object_uuid=object_uuid)
+    return query.order_by(asc(sdn_journal_db.SdnJournal.created_at),
+                          asc(sdn_journal_db.SdnJournal.seqnum)).all()
+
+
+@db_api.CONTEXT_READER
+def get_row(context, row_id):
+    return context.session.query(sdn_journal_db.SdnJournal).filter_by(
+        id=row_id).one_or_none()
+
+
+def _get_failed_row_with_lock(context, row_id):
+    row = context.session.query(sdn_journal_db.SdnJournal).filter_by(
+        id=row_id).with_for_update().one_or_none()
+    if row is None:
+        raise sdn_exc.JournalRowNotFound(row_id=row_id)
+    if row.state != sdn_const.FAILED:
+        raise sdn_exc.JournalRowNotFailed(row_id=row_id, state=row.state)
+    return row
+
+
+@db_api.CONTEXT_READER
+def get_newer_row(context, row):
+    """Return a newer row of the same object, or None"""
+    return context.session.query(sdn_journal_db.SdnJournal).filter(
+        sdn_journal_db.SdnJournal.object_uuid == row.object_uuid,
+        _is_newer(context, row),
+        sdn_journal_db.SdnJournal.id != row.id).order_by(
+        asc(sdn_journal_db.SdnJournal.created_at)).first()
+
+
+def _is_port_delete(row):
+    return (row.object_type == sdn_const.PORT and
+            row.operation == sdn_const.DELETE)
+
+
+def _get_bound_host(context, port_id):
+    """Return the host of a binding of the port, or None if it is unbound
+
+    A port being live migrated has two bindings; either counts.
+    """
+    for binding in context.session.query(ml2_models.PortBinding).filter_by(
+            port_id=port_id):
+        if binding.host and binding.vif_type not in (
+                portbindings.VIF_TYPE_UNBOUND,
+                portbindings.VIF_TYPE_BINDING_FAILED):
+            return binding.host
+    return None
+
+
+@db_api.retry_if_session_inactive()
+@db_api.CONTEXT_WRITER
+def retry_failed_row(context, row_id):
+    """Make a failed port deletion pending again, so that it is sent again
+
+    The row is sent at the next sync, with its retries counted from zero.
+    Only port deletions are: the journal keeps them until an operator deals
+    with them, and sending one again is harmless once it is done, since the
+    controller then answers 404. Other failed rows are deleted after [sdn]
+    completed_rows_retention.
+
+    A deletion is refused if sending it could undo something newer: if the
+    journal has a newer row of the port, if the port is bound again, since
+    its newer POST may have been completed and cleaned up already, or if
+    another port with the same GUID is bound on the same network, since
+    the controller would remove the GUID that both use.
+
+    :raises: JournalRowNotFound, JournalRowNotFailed, JournalRowSuperseded
+             or JournalRowNotRetryable
+    """
+    row = _get_failed_row_with_lock(context, row_id)
+    if not _is_port_delete(row):
+        raise sdn_exc.JournalRowNotRetryable(
+            row_id=row_id, reason='only failed port deletions are sent '
+            'again; the journal deletes other failed rows after [sdn] '
+            'completed_rows_retention')
+    # Keep the port from being bound until this commits. ML2 records the
+    # POST of a new binding in the transaction that commits it.
+    lock_port_binding(context, row.object_uuid)
+    newer = get_newer_row(context, row)
+    if newer:
+        raise sdn_exc.JournalRowSuperseded(
+            row_id=row_id, newer_id=newer.id, operation=newer.operation)
+    host = _get_bound_host(context, row.object_uuid)
+    if host:
+        raise sdn_exc.JournalRowNotRetryable(
+            row_id=row_id, reason='port %s is bound again, on host %s, so '
+            'sending its old deletion would remove it from its partition '
+            'key' % (row.object_uuid, host))
+    network_id = jsonutils.loads(row.data or '{}').get('network_id')
+    for port in get_ports_with_same_guid(context, row):
+        if port['host'] and port['network_id'] == network_id:
+            raise sdn_exc.JournalRowNotRetryable(
+                row_id=row_id, reason='port %s, with the same GUID, is '
+                'bound on the same network, on host %s, so the controller '
+                'could remove the GUID that it uses' % (
+                    port['id'], port['host']))
+    row.retry_count = 0
+    row.job_id = None
+    _update_db_row_state(context.session, row, sdn_const.PENDING)
+    return row
+
+
+@db_api.retry_if_session_inactive()
+@db_api.CONTEXT_WRITER
+def delete_failed_row(context, row_id):
+    """Delete a failed row
+
+    :raises: JournalRowNotFound or JournalRowNotFailed
+    """
+    row = _get_failed_row_with_lock(context, row_id)
+    context.session.delete(row)
+
+
+@db_api.CONTEXT_READER
+def get_ports_with_same_guid(context, row):
+    """Return the other ports with the row's GUID
+
+    For a failed port deletion, these are the ports that can't be added to
+    a partition key until it is dealt with: the journal sets those that it
+    holds DOWN for it to ERROR when they are bound.
+
+    :returns: a list of dicts with each port's id, status, network_id, and
+              host, the host of a binding, or None if it is unbound.
+    """
+    identity = get_port_guid_identity(jsonutils.loads(row.data or '{}'))
+    if not identity:
+        return []
+    # The candidates: ports with the MAC address, which Neutron stores in
+    # lower case, and with the client ID.
+    by_mac = context.session.query(models_v2.Port.id).filter(
+        models_v2.Port.mac_address == identity)
+    opt = edo_models.ExtraDhcpOpt
+    by_client_id = context.session.query(opt.port_id).filter(
+        opt.opt_name.in_(('client-id', '61')),
+        func.lower(opt.opt_value) == identity)
+    port_ids = ({port_id for port_id, in by_mac} |
+                {port_id for port_id, in by_client_id})
+    port_ids.discard(row.object_uuid)
+    ports = []
+    for port_id in sorted(port_ids):
+        port = context.session.query(models_v2.Port).filter_by(
+            id=port_id).one_or_none()
+        if port is None:
+            continue
+        binding = context.session.query(ml2_models.PortBinding).filter_by(
+            port_id=port_id).first()
+        opts = context.session.query(edo_models.ExtraDhcpOpt).filter_by(
+            port_id=port_id).all()
+        port_dict = {
+            'mac_address': port.mac_address,
+            'binding:vnic_type': binding.vnic_type if binding else None,
+            'extra_dhcp_opts': [{'opt_name': opt.opt_name,
+                                 'opt_value': opt.opt_value}
+                                for opt in opts]}
+        if get_port_guid_identity(port_dict) == identity:
+            ports.append({'id': port.id, 'status': port.status,
+                          'network_id': port.network_id,
+                          'host': _get_bound_host(context, port.id)})
+    return ports
 
 
 # This function is currently not used.

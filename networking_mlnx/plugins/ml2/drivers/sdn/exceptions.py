@@ -40,3 +40,21 @@ class SDNDriverConfError(exc.NeutronException):
 
 class SDNDriverCertError(exc.NeutronException):
     message = _("SSL certificate error: %(msg)s")
+
+
+class JournalRowNotFound(exc.NotFound):
+    message = _("Journal row %(row_id)s does not exist")
+
+
+class JournalRowNotFailed(exc.Conflict):
+    message = _("Journal row %(row_id)s is %(state)s, not failed")
+
+
+class JournalRowNotRetryable(exc.Conflict):
+    message = _("Journal row %(row_id)s can't be sent again: %(reason)s")
+
+
+class JournalRowSuperseded(exc.Conflict):
+    message = _("Journal row %(row_id)s can't be sent again: row "
+                "%(newer_id)s, a later %(operation)s of the same object, "
+                "would be undone")

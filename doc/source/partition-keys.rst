@@ -89,9 +89,63 @@ between attempts, and holds every port with the same GUID meanwhile. With the
 default ``[sdn] retry_count`` of -1 it is retried until it succeeds. One that
 runs out of retries, or whose job fails, stays in the
 ``sdn_journal`` table in the ``failed`` state, and every port with the same
-GUID is set to ``ERROR``, until an operator has checked that the GUID was
-removed from the partition key and deleted the row. This applies to every
-failed port deletion, including any left from earlier releases for Ethernet
-ports, whose MAC address is compared with the GUIDs of instances' ports.
-Deletions recorded in the same second can still wait for each other, which
-needs the same operator action.
+GUID is set to ``ERROR``, until an operator deals with the row. This applies
+to every failed port deletion, including any left from earlier releases for
+Ethernet ports, whose MAC address is compared with the GUIDs of instances'
+ports. Deletions recorded in the same second can still wait for each other,
+which needs the same operator action.
+
+Failed journal rows
+~~~~~~~~~~~~~~~~~~~
+
+The ``neutron-mlnx-manage journal`` commands show and recover the journal's
+rows. Run them where ``neutron-server`` runs, with its configuration files, so
+that they can reach Neutron's database. List the failed rows, and show one.
+For a failed port deletion, ``show`` lists the other ports with the same GUID,
+which can't be added to a partition key until it is dealt with::
+
+    neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
+        journal list --state failed
+    neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
+        journal show ROW_ID
+
+As with the ``openstack`` client, ``list`` and ``show`` print a table, and
+take ``-f json``, ``-f yaml`` or ``-f value``, and ``-c`` to choose columns.
+For example, to list the IDs of the failed rows::
+
+    neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
+        journal list --state failed -f value -c ID
+
+To recover a failed port deletion, once the controller is working again,
+send it again::
+
+    neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
+        journal retry ROW_ID
+
+Once ``list --object PORT_ID`` shows the row ``completed``, or no longer
+shows it, the controller has removed the GUID. If the row fails again, look
+at ``neutron-server``'s log for the controller's answer.
+
+``retry`` only sends port deletions, and refuses one that could undo
+something newer: if the journal has a newer row of the port, if the port is
+bound again, or if another port with the same GUID is bound on the same
+network. Delete such a row, or one that the controller can't complete, only
+after checking on the controller that the port's GUID is in no partition key
+that it shouldn't be in::
+
+    neutron-mlnx-manage --config-file /etc/neutron/neutron.conf \
+        journal delete ROW_ID
+
+``delete`` takes several row IDs. It lists the rows, with each port's GUID
+and network, and asks once before deleting them. It reports and skips any ID
+whose row doesn't exist or isn't failed, for example because it has been sent
+again since you listed it, deletes the others and exits with status 1. For
+example, once you have checked every failed row on the controller, delete
+them all::
+
+    CONF="--config-file /etc/neutron/neutron.conf"
+    IDS=$(neutron-mlnx-manage $CONF journal list --state failed -f value -c ID)
+    [ -z "$IDS" ] || neutron-mlnx-manage $CONF journal delete $IDS
+
+Either way, the ports with the same GUID that were set to ``ERROR`` stay so:
+unbind and rebind them.
