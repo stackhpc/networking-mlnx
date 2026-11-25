@@ -55,6 +55,15 @@ class TestClient(base.TestCase):
             self.assertRaises(cfg.NoSuchOptError,
                               client.SdnRestClient.create_client)
 
+    def test_url_trailing_slash(self):
+        self.conf.set_override('url', 'http://some_val/ufmRestV3/',
+                               sdn_const.GROUP_OPT)
+        sdn_client = client.SdnRestClient.create_client()
+        with mock.patch.object(sdn_client, 'request') as request:
+            sdn_client.get('app/jobs/1')
+        request.assert_called_once_with(
+            sdn_const.GET, 'http://some_val/ufmRestV3/app/jobs/1', None)
+
     def test_cert_verify_default(self):
         test_client = client.SdnRestClient.create_client()
         self.assertEqual(False, test_client.verify)

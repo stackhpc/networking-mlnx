@@ -56,7 +56,7 @@ class SdnRestClient(object):
         self.timeout = timeout
         self.token = token
         self._validate_mandatory_params_exist()
-        self.url.rstrip("/")
+        self.url = self.url.rstrip("/")
         self.verify = verify
         self.headers = {"Authorization": "Basic {0}".format(self.token),
                         **sdn_const.JSON_HTTP_HEADER}
