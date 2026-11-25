@@ -273,6 +273,9 @@ class SDNMechanismDriver(api.MechanismDriver):
                                 self.vif_type,
                                 self.vif_details,
                                 status)
+            # ML2 keeps the last binding set, so stop at the first segment
+            # bound, as other drivers do.
+            return
 
     @context_validator(sdn_const.NETWORK)
     @error_handler

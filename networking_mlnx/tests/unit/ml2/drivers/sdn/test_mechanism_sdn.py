@@ -1684,6 +1684,35 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
                 self.mech._is_port_binding_supported(port, segment))
         self.assertIn('VNIC type direct', '\n'.join(logs.output))
 
+    def test_bind_port_binds_first_supported_segment(self):
+        context = self._baremetal(self._get_mock_bind_operation_context())
+        segments = self._get_segments_list() + [
+            dict(self._get_segments_list()[0], id='second-segment-id',
+                 segmentation_id=SEG_ID + 1)]
+        context.network.network_segments = segments
+        context.segments_to_bind = segments
+        self.mech.bind_port(context)
+        context.set_binding.assert_called_once()
+        self.assertEqual(segments[0]['id'],
+                         context.set_binding.call_args[0][0])
+
+    def test_bind_port_status_is_first_segment_status(self):
+        # The status is that of the segment bound: with a flat segment
+        # first, an IB bare metal port is ACTIVE rather than held DOWN.
+        context = self._baremetal(self._get_mock_bind_operation_context())
+        segments = [
+            dict(self._get_segments_list(net_type=constants.TYPE_FLAT)[0],
+                 id='flat-segment-id', segmentation_id=None),
+            self._get_segments_list()[0]]
+        context.network.network_segments = segments
+        context.segments_to_bind = segments
+        self.mech.bind_port(context)
+        context.set_binding.assert_called_once()
+        self.assertEqual('flat-segment-id',
+                         context.set_binding.call_args[0][0])
+        self.assertEqual(constants.PORT_STATUS_ACTIVE,
+                         context.set_binding.call_args[0][3])
+
     def test_bind_port_logs_binding(self):
         with self.assertLogs(sdn_mech_driver.__name__, 'INFO') as logs:
             self._bind_baremetal()
