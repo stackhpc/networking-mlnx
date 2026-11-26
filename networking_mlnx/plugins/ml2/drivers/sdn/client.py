@@ -102,6 +102,10 @@ class SdnRestClient(object):
         try:
             LOG.debug("request status: %d", response.status_code)
             request_found = True
+            if response.headers:
+                LOG.debug("request headers:")
+                for key, value in response.headers.items():
+                    LOG.debug("header (%s: %s)", key, value)
             if response.text:
                 LOG.debug("request text: %s", response.text)
             if (response.status_code == requests.codes.not_found and
