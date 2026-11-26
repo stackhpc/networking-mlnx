@@ -16,19 +16,21 @@
 import functools
 import html.parser
 import re
-import threading
 from urllib import parse
 
 from neutron.db import provisioning_blocks
 from neutron.plugins.ml2 import db as ml2_db
+from neutron import worker
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.callbacks import resources
 from neutron_lib import constants as n_const
 from neutron_lib import context as nl_context
 from neutron_lib.db import api as db_api
 from neutron_lib.plugins import directory
+from neutron_lib import rpc as n_rpc
 from oslo_config import cfg
 from oslo_log import log as logging
+import oslo_messaging
 from oslo_serialization import jsonutils
 import requests
 
@@ -175,7 +177,7 @@ def _complete_row(context, row):
     """Release the port that a MONITORING row holds, if any, and complete it
 
     Both happen in one transaction, which locks the row, so that a journal
-    thread that read the row before another one changed it can't act on
+    worker that read the row before another one changed it can't act on
     it.
 
     :returns: the completed row, or None if the row has changed since it
@@ -215,7 +217,7 @@ def _update_monitored_row(context, row, update):
 def _log_row_changed(row):
     LOG.debug("Journal row %(row)s for %(operation)s %(type)s %(uuid)s has "
               "changed since job %(job_id)s was checked, so another journal "
-              "thread has handled it", {'row': row.id,
+              "worker has handled it", {'row': row.id,
                                         'operation': row.operation,
                                         'type': row.object_type,
                                         'uuid': row.object_uuid,
@@ -276,68 +278,102 @@ def _fail_port_provisioning(context, row):
         LOG.exception("Failed to set port %s to ERROR", row.object_uuid)
 
 
-class SdnJournalThread(object):
-    """Thread worker for the SDN Journal Database."""
+class SdnJournalWorker(worker.PeriodicWorker):
+    """Send the journal's rows to the SDN controller, and check their jobs
+
+    The mechanism driver returns this from get_workers(), so that only
+    neutron-periodic-workers runs it, rather than every process that loads
+    ML2. It syncs every [sdn] sync_timeout seconds.
+
+    Making a port ACTIVE, or setting it to ERROR, runs every mechanism
+    driver's update_port_postcommit(), which not every mechanism driver
+    can do in neutron-periodic-workers: ML2/OVN only connects to OVN in
+    the API, RPC and OVN maintenance workers, and elsewhere waits for that
+    forever. So the worker asks an RPC worker to, with SdnJournalRpcApi.
+    """
 
     def __init__(self):
         self.client = client.SdnRestClient.create_client()
         self._sync_timeout = cfg.CONF.sdn.sync_timeout
         self._row_retry_count = cfg.CONF.sdn.retry_count
         self._retry_delays = self._get_retry_delays(self._sync_timeout)
-        self.event = threading.Event()
-        self.lock = threading.Lock()
-        self._sync_thread = self.start_sync_thread()
-        self._start_sync_timer()
+        self._rpc = None
+        self._rpc_timed_out = False
+        super(SdnJournalWorker, self).__init__(
+            check_func=self.sync, interval=self._sync_timeout,
+            initial_delay=self._sync_timeout, desc='SDN journal')
 
-    def start_sync_thread(self):
-        # Start the sync thread
-        LOG.debug("Starting a new sync thread")
-        sync_thread = threading.Thread(
-            name='sync',
-            target=self.run_sync_thread)
-        sync_thread.start()
-        return sync_thread
+    @property
+    def rpc(self):
+        # Every process that loads ML2 creates the worker, but only
+        # neutron-periodic-workers runs it.
+        if self._rpc is None:
+            self._rpc = SdnJournalRpcApi()
+        return self._rpc
 
-    def set_sync_event(self):
-        # Prevent race when starting the timer
-        with self.lock:
-            LOG.debug("Resetting thread timer")
-            main_thread = threading.main_thread()
+    def _complete_monitored_row(self, context, row):
+        """Complete a row whose job has completed, and release its port
 
-            self._timer.cancel()
-            if main_thread.is_alive():
-                self._start_sync_timer()
-            else:
-                LOG.debug("Shutting down timer")
-        self.event.set()
+        If the RPC call fails, the row stays MONITORING, so that this is
+        tried again at the next sync.
+        """
+        if (row.object_type != sdn_const.PORT or
+                row.operation != sdn_const.POST):
+            # No port to release, so nothing runs mechanism drivers.
+            _complete_monitored_row(context, row)
+            return
+        log_args = {'operation': row.operation, 'type': row.object_type,
+                    'uuid': row.object_uuid}
+        if self._rpc_timed_out:
+            # Without an RPC worker, every call would wait for its timeout
+            # and hold up the rest of the journal.
+            LOG.debug("Not asking an RPC worker to complete %(operation)s "
+                      "%(type)s %(uuid)s until the next sync", log_args)
+            return
+        try:
+            self.rpc.complete_port_row(context, row)
+        except oslo_messaging.MessagingTimeout:
+            self._rpc_timed_out = True
+            LOG.error("No RPC worker answered the request to complete "
+                      "%(operation)s %(type)s %(uuid)s; check that "
+                      "neutron-rpc-server is running. Trying again at the "
+                      "next sync", log_args)
+        except Exception:
+            LOG.exception("Failed to ask an RPC worker to complete "
+                          "%(operation)s %(type)s %(uuid)s; trying again at "
+                          "the next sync", log_args)
 
-    def _start_sync_timer(self):
-        self._timer = threading.Timer(self._sync_timeout,
-                                      self.set_sync_event)
-        self._timer.start()
+    def _fail_port_provisioning(self, context, row):
+        """Set the port that the row holds DOWN, if any, to ERROR
 
-    def run_sync_thread(self, exit_after_run=False):
-        while True:
-            try:
-                self.event.wait()
-                main_thread = threading.main_thread()
-                self.event.clear()
-                if not main_thread.is_alive():
-                    LOG.debug("Shutting down sync thread")
-                    return
+        This is asked of an RPC worker even after a call has timed out,
+        since it isn't tried again: the row has failed. If it fails, the
+        port keeps its provisioning block, so it stays DOWN, and Nova and
+        Ironic fail when they time out.
+        """
+        if (row.object_type != sdn_const.PORT or
+                row.operation != sdn_const.POST):
+            return
+        try:
+            self.rpc.fail_port(context, row)
+        except Exception:
+            LOG.exception("Failed to ask an RPC worker to set port %s to "
+                          "ERROR; it stays DOWN instead", row.object_uuid)
 
-                context = nl_context.get_admin_context()
-                self._sync_pending_rows(context, exit_after_run)
-                self._sync_progress_rows(context)
+    def sync(self, exit_after_run=False):
+        """Sync the journal once
 
-                LOG.debug("Clearing sync thread event")
-                if exit_after_run:
-                    # Permanently waiting thread model breaks unit tests
-                    # Adding this arg to exit here only for unit tests
-                    break
-            except Exception:
-                # Catch exceptions to protect the thread while running
-                LOG.exception("Error on run_sync_thread")
+        :param exit_after_run: for unit tests, stop sending rows at the
+                               first that has to wait
+        """
+        self._rpc_timed_out = False
+        try:
+            context = nl_context.get_admin_context()
+            self._sync_pending_rows(context, exit_after_run)
+            self._sync_progress_rows(context)
+        except Exception:
+            # Keep the worker running, to sync again at the next interval.
+            LOG.exception("Failed to sync the SDN journal")
 
     @staticmethod
     def _get_retry_delays(sync_timeout):
@@ -538,7 +574,7 @@ class SdnJournalThread(object):
     def _retry_row(self, context, row, monitored=False):
         """Count a retry of the row, and fail it after too many
 
-        :param monitored: the row is MONITORING, so another journal thread
+        :param monitored: the row is MONITORING, so another journal worker
                           may have changed it since it was read
         """
         if monitored:
@@ -560,13 +596,12 @@ class SdnJournalThread(object):
         if row.state == sdn_const.FAILED:
             LOG.error("Giving up on %(operation)s %(type)s %(uuid)s after "
                       "%(retry)s retries", log_args)
-            _fail_port_provisioning(context, row)
+            self._fail_port_provisioning(context, row)
         else:
             LOG.info("Will send %(operation)s %(type)s %(uuid)s again "
                      "(retry %(retry)s of %(max)s)", log_args)
 
-    @staticmethod
-    def _fail_row(context, row, monitored=False):
+    def _fail_row(self, context, row, monitored=False):
         """Fail the row, and the port that it holds DOWN, if any
 
         :param monitored: as for _retry_row()
@@ -580,7 +615,7 @@ class SdnJournalThread(object):
                 return
         else:
             db.update_db_row_state(context, row, sdn_const.FAILED)
-        _fail_port_provisioning(context, row)
+        self._fail_port_provisioning(context, row)
 
     def _sync_progress_rows(self, context):
         # 1. get all progressed job
@@ -609,7 +644,7 @@ class SdnJournalThread(object):
                                       'operation': row.operation,
                                       'type': row.object_type,
                                       'uuid': row.object_uuid})
-                            _complete_monitored_row(context, row)
+                            self._complete_monitored_row(context, row)
                             continue
                         if job_status in ("Pending", "Running"):
                             LOG.debug("SDN Controller Job id %(job_id)s is "
@@ -692,3 +727,65 @@ class SdnJournalThread(object):
         return {'job_id': row.job_id, 'operation': row.operation,
                 'type': row.object_type, 'uuid': row.object_uuid,
                 'error': error}
+
+
+RPC_TOPIC = 'mlnx_sdn_journal'
+# Seconds to wait for an RPC worker to answer the journal.
+RPC_TIMEOUT = 30
+
+
+class SdnJournalRpcApi(object):
+    """Ask an RPC worker to change the status of a port the journal holds
+
+    API version history:
+        1.0 - Initial version.
+    """
+
+    def __init__(self):
+        target = oslo_messaging.Target(topic=RPC_TOPIC, version='1.0')
+        self.client = n_rpc.get_client(target)
+
+    def _prepare(self):
+        # A fixed timeout, rather than neutron-lib's, which doubles after
+        # each timeout, up to [DEFAULT] rpc_response_max_timeout, so that
+        # the journal isn't held up for long without an RPC worker.
+        return self.client.prepare(timeout=RPC_TIMEOUT)
+
+    def complete_port_row(self, context, row):
+        """Complete a port's POST row whose job has completed
+
+        The RPC worker releases the port, which becomes ACTIVE if nothing
+        else holds it, unless the row has changed since it was read.
+        """
+        self._prepare().call(
+            context, 'complete_port_row', row_id=row.id, job_id=row.job_id,
+            retry_count=row.retry_count)
+
+    def fail_port(self, context, row):
+        """Set the port that a failed port's POST row holds DOWN to ERROR"""
+        self._prepare().call(context, 'fail_port', row_id=row.id)
+
+
+class SdnJournalRpcCallback(object):
+    """The RPC workers' side of SdnJournalRpcApi"""
+
+    target = oslo_messaging.Target(version='1.0')
+
+    def complete_port_row(self, context, row_id, job_id, retry_count):
+        row = db.get_row(context, row_id)
+        if (row is None or row.state != sdn_const.MONITORING or
+                row.job_id != job_id or row.retry_count != retry_count):
+            # Another journal has handled it, or this is a repeated call.
+            LOG.debug("Journal row %s has changed since job %s was "
+                      "checked, leaving it", row_id, job_id)
+            return
+        _complete_monitored_row(context, row)
+
+    def fail_port(self, context, row_id):
+        row = db.get_row(context, row_id)
+        if row is None or row.state != sdn_const.FAILED:
+            # A late call, about a row that has been sent again since.
+            LOG.debug("Journal row %s is no longer failed, leaving its port",
+                      row_id)
+            return
+        _fail_port_provisioning(context, row)

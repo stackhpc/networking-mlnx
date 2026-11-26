@@ -1,0 +1,29 @@
+---
+upgrade:
+  - |
+    The ``mlnx_sdn_assist`` journal, which sends networks and ports to the
+    SDN controller and checks the controller's jobs, now runs only in
+    ``neutron-periodic-workers``, as one of the ML2 plugin's workers.
+    Previously every Neutron process that loaded ML2 ran it, including the
+    API and RPC workers and the OVN maintenance worker. Once the controller
+    has added a port to its partition key, or failed to, the journal asks
+    an RPC worker of ``neutron-rpc-server``, over the RPC topic
+    ``mlnx_sdn_journal``, to make the port ``ACTIVE`` or ``ERROR``. Run both
+    ``neutron-periodic-workers`` and ``neutron-rpc-server``, with ``[sdn]``
+    configured as for ``neutron-server`` and ``[DEFAULT] rpc_workers`` not
+    ``0``: otherwise nothing is sent to the SDN controller, or ports held
+    ``DOWN`` until the controller has added them to their partition key
+    stay ``DOWN``. If no RPC worker answers, the journal logs an error. The
+    journal's messages are now in ``neutron-periodic-workers``' log.
+  - |
+    The journal now syncs every ``[sdn] sync_timeout`` seconds, 10 by
+    default. It sends a change to the SDN controller up to that long after
+    it is made, rather than at once, and checks the controller's job at the
+    next sync, so an instance's or bare metal node's InfiniBand port can
+    take up to about twice that long to become ``ACTIVE``. Lower the option
+    to shorten the delay.
+fixes:
+  - |
+    The ``mlnx_sdn_assist`` journal in ``neutron-periodic-workers`` no
+    longer stops for good when it makes its first port ``ACTIVE`` or
+    ``ERROR`` with ML2/OVN, which doesn't connect to OVN in that process.

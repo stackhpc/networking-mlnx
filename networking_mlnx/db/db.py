@@ -317,9 +317,10 @@ def get_all_monitoring_db_row_by_oldest(context):
 def lock_monitoring_row(context, row):
     """Lock a MONITORING row, unless it has changed since it was read
 
-    Every journal thread checks the jobs of all MONITORING rows, so another
-    one may already have completed, retried or failed the row, and the row
-    may since have been sent again, with a new job. The caller must be in a
+    The journal worker of each host that runs neutron-periodic-workers
+    checks the jobs of all MONITORING rows, so another one may already have
+    completed, retried or failed the row, and the row may since have been
+    sent again, with a new job. The caller must be in a
     writer transaction, and act only on the row that this returns.
 
     :returns: the locked row, or None if the row is no longer MONITORING

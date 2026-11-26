@@ -40,7 +40,10 @@ sdn_opts = [
                    default=10
                    ),
         cfg.IntOpt('sync_timeout', default=10,
-                   help=_("Sync thread timeout in seconds.")),
+                   help=_("Interval in seconds at which "
+                          "neutron-periodic-workers sends the journal's "
+                          "rows to the SDN controller and checks the jobs "
+                          "of those it has sent.")),
         cfg.IntOpt('retry_count', default=-1,
                    help=_("Number of times to retry a row "
                           "before failing."

@@ -61,6 +61,16 @@ What the deployment has to provide:
   physical networks in ``[sdn] physical_networks``. Without them, set
   ``[mlnx] allow_unenforced_pkeys = True`` only if the subnet manager's
   partitions match the networks' segmentation IDs by other means.
+* ``neutron-periodic-workers`` and ``neutron-rpc-server``, with the same
+  configuration as ``neutron-server``. Only ``neutron-periodic-workers``
+  sends networks and ports to the SDN controller, every ``[sdn]
+  sync_timeout`` seconds, and it asks ``neutron-rpc-server`` to make a port
+  ``ACTIVE``, or ``ERROR``, once the controller has handled it, so
+  ``[DEFAULT] rpc_workers`` must not be ``0``. Without either, ports held
+  ``DOWN`` stay ``DOWN``. If no RPC worker answers, the journal logs an
+  error, and tries again at its next sync to make the ports that the
+  controller has added ``ACTIVE``. Ports that the controller failed to add
+  stay ``DOWN`` rather than ``ERROR``.
 * The subnet manager must give virtual functions, hypervisors and bare metal
   nodes only limited membership of the default partition. A port is added to
   its network's partition key, but nothing removes it from the default
@@ -124,7 +134,7 @@ send it again::
 
 Once ``list --object PORT_ID`` shows the row ``completed``, or no longer
 shows it, the controller has removed the GUID. If the row fails again, look
-at ``neutron-server``'s log for the controller's answer.
+at ``neutron-periodic-workers``' log for the controller's answer.
 
 ``retry`` only sends port deletions, and refuses one that could undo
 something newer: if the journal has a newer row of the port, if the port is

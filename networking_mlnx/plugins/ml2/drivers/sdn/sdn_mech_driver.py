@@ -26,6 +26,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants as neutron_const
 from neutron_lib import exceptions as n_exc
 from neutron_lib.plugins.ml2 import api
+from neutron_lib import rpc as n_rpc
 from oslo_config import cfg
 from oslo_log import log
 
@@ -100,10 +101,11 @@ class SDNMechanismDriver(api.MechanismDriver):
 
     def initialize(self):
         self.maintenance_worker = maintenance.MaintenanceWorker()
+        self.journal_worker = None
         if self._is_sdn_sync_enabled():
             # Fail now rather than leave journal rows that never complete.
             schema.check_journal_states()
-            self.journal = journal.SdnJournalThread()
+            self.journal_worker = journal.SdnJournalWorker()
             self._start_maintenance_thread()
         self.supported_vnic_types = [portbindings.VNIC_BAREMETAL]
         self.supported_network_types = (
@@ -381,18 +383,6 @@ class SDNMechanismDriver(api.MechanismDriver):
             SDNMechanismDriver._record_in_journal(
                 context, sdn_const.PORT, sdn_const.DELETE, port_dic)
 
-    def _postcommit(self, context):
-        if not self._is_sdn_sync_enabled():
-            return
-        self.journal.set_sync_event()
-
-    create_network_postcommit = _postcommit
-    update_network_postcommit = _postcommit
-    create_port_postcommit = _postcommit
-    update_port_postcommit = _postcommit
-    delete_network_postcommit = _postcommit
-    delete_port_postcommit = _postcommit
-
     def _is_synced_binding(self, vif_type, segment):
         """Check if a binding is to a segment that the controller manages"""
         return (vif_type not in UNBOUND_VIF_TYPES and
@@ -645,6 +635,25 @@ class SDNMechanismDriver(api.MechanismDriver):
         return policy_object.QosPolicy.get_network_policy(
             context._plugin_context, net_id)
 
+    def start_rpc_listeners(self):
+        """Serve the journal's requests to change ports' status
+
+        ML2 calls this in its RPC workers, where every mechanism driver can
+        update a port, which the journal's worker can't do in
+        neutron-periodic-workers. See journal.SdnJournalWorker.
+        """
+        if not self.journal_worker:
+            return []
+        self._rpc_connection = n_rpc.Connection()
+        self._rpc_connection.create_consumer(
+            journal.RPC_TOPIC, [journal.SdnJournalRpcCallback()],
+            fanout=False)
+        return self._rpc_connection.consume_in_threads()
+
     def get_workers(self):
-        # The ML2 plugin calls this to discover background tasks
-        return [self.maintenance_worker]
+        # The ML2 plugin calls this to discover background tasks, which
+        # neutron-periodic-workers runs.
+        workers = [self.maintenance_worker]
+        if self.journal_worker:
+            workers.append(self.journal_worker)
+        return workers

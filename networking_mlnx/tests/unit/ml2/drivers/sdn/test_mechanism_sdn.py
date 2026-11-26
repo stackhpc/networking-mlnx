@@ -60,10 +60,28 @@ cfg.CONF.import_group(sdn_const.GROUP_OPT,
                       'networking_mlnx.plugins.ml2.drivers.sdn')
 
 
+class LoopbackRpcClient(object):
+    """Hands the journal's RPC calls straight to the RPC workers' side"""
+
+    def __init__(self):
+        self.callback = journal.SdnJournalRpcCallback()
+        self.calls = []
+
+    def prepare(self, **kwargs):
+        return self
+
+    def call(self, context, method, **kwargs):
+        self.calls.append((method, kwargs))
+        return getattr(self.callback, method)(context, **kwargs)
+
+
 class SdnConfigBase(test_plugin.Ml2PluginV2TestCase):
 
     def setUp(self):
         super(SdnConfigBase, self).setUp()
+        self.rpc_client = LoopbackRpcClient()
+        mock.patch.object(journal.n_rpc, 'get_client',
+                          return_value=self.rpc_client).start()
         self.conf_fixture = self.useFixture(fixture_config.Config())
         self.conf = self.conf_fixture.conf
         self.conf.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
@@ -81,8 +99,6 @@ class SdnTestCase(SdnConfigBase):
     def setUp(self):
         super(SdnTestCase, self).setUp()
         self.mech = sdn_mech_driver.SDNMechanismDriver()
-        mock.patch.object(journal.SdnJournalThread,
-                          'start_sync_thread').start()
         self.mock_request = mock.patch.object(client.SdnRestClient,
                                               'request').start()
         self.mock_request.side_effect = self.check_request
@@ -95,13 +111,6 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
 
     def setUp(self):
         super(SdnMechanismConfigTests, self).setUp()
-        # Creating the plugin initialises the driver, which would otherwise
-        # start a sync thread and timer that outlive the test and sync the
-        # journal in the middle of later tests.
-        mock.patch.object(journal.SdnJournalThread,
-                          'start_sync_thread').start()
-        mock.patch.object(journal.SdnJournalThread,
-                          '_start_sync_timer').start()
         self.mech = sdn_mech_driver.SDNMechanismDriver()
         self.conf_fixture = self.useFixture(fixture_config.Config())
         self.conf = self.conf_fixture.conf
@@ -151,6 +160,20 @@ class SdnMechanismConfigTests(testlib_api.SqlTestCase):
     def test_journal_schema_error_raises_exception(self, check):
         self.assertRaises(schema.JournalSchemaError, plugin.Ml2Plugin)
         check.assert_called_once_with()
+
+    def test_no_journal_worker_when_disabled(self):
+        self._set_config(url=None, token=None, sync_enabled=False)
+        self.mech.initialize()
+        self.assertEqual([self.mech.maintenance_worker],
+                         self.mech.get_workers())
+
+    def test_no_rpc_listeners_when_disabled(self):
+        self._set_config(url=None, token=None, sync_enabled=False)
+        self.mech.initialize()
+        with mock.patch.object(sdn_mech_driver.n_rpc,
+                               'Connection') as connection:
+            self.assertEqual([], self.mech.start_rpc_listeners())
+        connection.assert_not_called()
 
     @mock.patch.object(schema, 'check_journal_states')
     def test_journal_schema_not_checked_when_disabled(self, check):
@@ -251,10 +274,8 @@ class SdnDriverTestCase(SdnConfigBase):
         self.context = nl_context.get_admin_context()
 #        self.db_session = context.session
         self.mech = sdn_mech_driver.SDNMechanismDriver()
-        self.mock_sync_thread = mock.patch.object(
-            journal.SdnJournalThread, 'start_sync_thread').start()
         self.mech.initialize()
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         self.addCleanup(self._db_cleanup)
 
     def _get_segments_list(self, seg_id=SEG_ID, net_type=constants.TYPE_VLAN):
@@ -502,7 +523,7 @@ class SdnDriverTestCase(SdnConfigBase):
         self.assertEqual(object_type, row['object_type'])
         self.assertEqual(context.current['id'], row['object_uuid'])
 
-    def _test_thread_processing(self, operation, object_type,
+    def _test_worker_processing(self, operation, object_type,
                                 expected_calls=1):
         status_codes = {sdn_const.POST: requests.codes.created,
                         sdn_const.PUT: requests.codes.ok,
@@ -526,26 +547,24 @@ class SdnDriverTestCase(SdnConfigBase):
             uuid = context.current['id']
             url = '%s/%s' % (url, uuid)
         kwargs = {'url': url, 'data': DataMatcher(context, object_type)}
-        with mock.patch.object(self.thread.event, 'wait',
-                               return_value=False):
-            self._test_operation(self.thread.run_sync_thread, status_code,
-                                 expected_calls, http_request, **kwargs)
+        self._test_operation(self.worker.sync, status_code,
+                             expected_calls, http_request, **kwargs)
 
     def _test_object_type(self, object_type):
         # Add and process create request.
-        self._test_thread_processing(sdn_const.POST, object_type)
+        self._test_worker_processing(sdn_const.POST, object_type)
         rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(1, len(rows))
 
         # Add and process update request. Adds to database.
-        self._test_thread_processing(sdn_const.PUT, object_type)
+        self._test_worker_processing(sdn_const.PUT, object_type)
         rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(2, len(rows))
 
         # Add and process update request. Adds to database.
-        self._test_thread_processing(sdn_const.DELETE, object_type)
+        self._test_worker_processing(sdn_const.DELETE, object_type)
         rows = db.get_all_db_rows_by_state(self.context,
                                            sdn_const.COMPLETED)
         self.assertEqual(3, len(rows))
@@ -566,8 +585,8 @@ class SdnDriverTestCase(SdnConfigBase):
             with self._limit_row_fetches(), \
                     mock.patch('requests.request',
                                side_effect=request) as mock_request:
-                self.thread._sync_pending_rows(self.context, False)
-                self.thread._sync_progress_rows(self.context)
+                self.worker._sync_pending_rows(self.context, False)
+                self.worker._sync_progress_rows(self.context)
             return [c.args[0] + ' ' + c.kwargs['url'].rsplit('/', 1)[-1]
                     for c in mock_request.call_args_list]
 
@@ -601,14 +620,14 @@ class SdnDriverTestCase(SdnConfigBase):
                                     pending_type)
 
         # Get pending row and mark as processing (or monitoring) so that
-        # this row will not be processed by journal thread.
+        # this row will not be processed by the journal worker.
         row = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
         db.update_db_row_state(self.context, row[0], pending_state)
 
         # Create the object_type database row and process.
         # Verify that object request is not processed because the
         # dependent object operation has not been marked as 'completed'.
-        self._test_thread_processing(operation,
+        self._test_worker_processing(operation,
                                      object_type,
                                      expected_calls=0)
 
@@ -766,7 +785,7 @@ class SdnDriverTestCase(SdnConfigBase):
         with self._limit_row_fetches(), \
                 mock.patch('requests.request',
                            return_value=response) as mock_request:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
 
         self.assertEqual(1, mock_request.call_count)
         self.assertTrue(mock_request.call_args.kwargs['url'].endswith(
@@ -782,7 +801,7 @@ class SdnDriverTestCase(SdnConfigBase):
         db.update_db_row_state(self.context, row, sdn_const.MONITORING)
 
         with mock.patch('requests.request', return_value=response):
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
 
         # The request is sent again, rather than monitored forever, and this
         # counts against retry_count.
@@ -810,7 +829,7 @@ class SdnDriverTestCase(SdnConfigBase):
             with mock.patch('requests.request',
                             return_value=self._response(requests.codes.ok,
                                                         'null')):
-                self.thread._sync_pending_rows(self.context, False)
+                self.worker._sync_pending_rows(self.context, False)
 
             row = db.get_all_db_rows(self.context)[0]
             self.assertEqual(sdn_const.COMPLETED, row.state)
@@ -877,14 +896,14 @@ class SdnDriverTestCase(SdnConfigBase):
         # UFM answers a port's POST with an HTML page that links to its job.
         self.conf.set_override('url', 'https://ufm/ufmRestV3',
                                sdn_const.GROUP_OPT)
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         self._call_operation_object(sdn_const.POST, sdn_const.PORT)
         html = ('<html><body><a href="/ufmRestV3/app/jobs/7">job</a>'
                 '</body></html>')
         with mock.patch('requests.request',
                         return_value=self._response(requests.codes.accepted,
                                                     html)):
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
 
         row = db.get_all_db_rows(self.context)[0]
         self.assertEqual(sdn_const.MONITORING, row.state)
@@ -895,7 +914,7 @@ class SdnDriverTestCase(SdnConfigBase):
                         return_value=self._response(
                             requests.codes.ok,
                             '{"Status": "Completed"}')) as request:
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
         self.assertEqual('https://ufm/ufmRestV3/app/jobs/7',
                          request.call_args.kwargs['url'])
         row = db.get_all_db_rows(self.context)[0]
@@ -908,7 +927,7 @@ class SdnDriverTestCase(SdnConfigBase):
             with mock.patch('requests.request',
                             return_value=self._response(requests.codes.ok,
                                                         text)):
-                self.thread._sync_pending_rows(self.context, False)
+                self.worker._sync_pending_rows(self.context, False)
 
             row = db.get_all_db_rows(self.context)[0]
             self.assertEqual(sdn_const.PENDING, row.state)
@@ -937,7 +956,7 @@ class SdnDriverTestCase(SdnConfigBase):
                                       '{"Status": "Completed"}')
 
             with mock.patch('requests.request', side_effect=request):
-                self.thread._sync_progress_rows(self.context)
+                self.worker._sync_progress_rows(self.context)
 
             rows = {r.job_id: r for r in db.get_all_db_rows(self.context)}
             self.assertEqual(sdn_const.PENDING, rows['app/jobs/1'].state)
@@ -955,7 +974,7 @@ class SdnDriverTestCase(SdnConfigBase):
 
         with mock.patch('requests.request',
                         side_effect=requests.exceptions.ConnectionError):
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
 
         row = db.get_all_db_rows(self.context)[0]
         self.assertEqual(sdn_const.MONITORING, row.state)
@@ -976,7 +995,7 @@ class SdnDriverTestCase(SdnConfigBase):
 
         with self._limit_row_fetches(), \
                 mock.patch('requests.request') as mock_request:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
 
         mock_request.assert_not_called()
         row = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)[0]
@@ -985,16 +1004,16 @@ class SdnDriverTestCase(SdnConfigBase):
 
     def test_get_retry_delays(self):
         self.assertEqual([10, 20, 40, 80, 160, journal.MAX_RETRY_DELAY],
-                         journal.SdnJournalThread._get_retry_delays(10))
+                         journal.SdnJournalWorker._get_retry_delays(10))
         self.assertEqual([journal.MAX_RETRY_DELAY],
-                         journal.SdnJournalThread._get_retry_delays(
+                         journal.SdnJournalWorker._get_retry_delays(
                              journal.MAX_RETRY_DELAY))
         # A sync_timeout longer than MAX_RETRY_DELAY is the only delay.
         self.assertEqual([600],
-                         journal.SdnJournalThread._get_retry_delays(600))
+                         journal.SdnJournalWorker._get_retry_delays(600))
         # Values below one second can't loop forever.
         for sync_timeout in (0, -10):
-            delays = journal.SdnJournalThread._get_retry_delays(sync_timeout)
+            delays = journal.SdnJournalWorker._get_retry_delays(sync_timeout)
             self.assertEqual(1, delays[0])
             self.assertEqual(journal.MAX_RETRY_DELAY, delays[-1])
 
@@ -1015,7 +1034,7 @@ class SdnDriverTestCase(SdnConfigBase):
         with self._limit_row_fetches(), \
                 mock.patch('requests.request',
                            return_value=response) as mock_request:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
         return mock_request, last_retried
 
     def test_sync_pending_rows_waits_before_retry(self):
@@ -1045,7 +1064,7 @@ class SdnDriverTestCase(SdnConfigBase):
 
         with self._limit_row_fetches(), \
                 mock.patch('requests.request') as mock_request:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
 
         mock_request.assert_not_called()
         rows = db.get_all_db_rows_by_state(self.context, sdn_const.PENDING)
@@ -1080,16 +1099,39 @@ class SdnDriverTestCase(SdnConfigBase):
         old_time = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
         self._test_cleanup_processing_rows(old_time, sdn_const.PENDING)
 
-    def test_thread_call(self):
-        """Verify that the sync thread method is called."""
+    def test_journal_worker(self):
+        # neutron-periodic-workers runs the plugins' workers, and those
+        # whose worker_process_count is 0 as threads of one process.
+        workers = self.mech.get_workers()
+        self.assertEqual([self.mech.maintenance_worker,
+                          self.mech.journal_worker], workers)
+        worker = workers[1]
+        self.assertIsInstance(worker, journal.SdnJournalWorker)
+        self.assertEqual(0, worker.worker_process_count)
+        self.assertEqual(worker.sync, worker._check_func)
+        self.assertEqual(cfg.CONF.sdn.sync_timeout, worker._interval)
+        self.assertEqual(cfg.CONF.sdn.sync_timeout, worker._initial_delay)
 
-        # The driver starts the sync thread when it is initialised, and
-        # each operation sets the thread's sync event.
-        self._call_operation_object(sdn_const.POST,
-                                    sdn_const.NETWORK)
+    def test_start_rpc_listeners(self):
+        with mock.patch.object(sdn_mech_driver.n_rpc,
+                               'Connection') as connection:
+            servers = self.mech.start_rpc_listeners()
+        conn = connection.return_value
+        conn.create_consumer.assert_called_once_with(
+            journal.RPC_TOPIC, [mock.ANY], fanout=False)
+        self.assertIsInstance(conn.create_consumer.call_args.args[1][0],
+                              journal.SdnJournalRpcCallback)
+        self.assertEqual(conn.consume_in_threads.return_value, servers)
 
-        # Verify that the thread call was made.
-        self.assertTrue(self.mock_sync_thread.called)
+    def test_sync_survives_errors(self):
+        with mock.patch.object(self.worker, '_sync_pending_rows',
+                               side_effect=RuntimeError), \
+                mock.patch.object(self.worker,
+                                  '_sync_progress_rows') as progress, \
+                mock.patch.object(journal.LOG, 'exception') as log:
+            self.worker.sync()
+        log.assert_called_once()
+        progress.assert_not_called()
 
     @db_api.CONTEXT_WRITER
     def _decrease_row_created_time(self, context, row):
@@ -1110,10 +1152,10 @@ class SdnDriverTestCase(SdnConfigBase):
         # change the last update created time
         self._decrease_row_created_time(self.context, last_row)
 
-        # create 1 more operation to trigger the sync thread
+        # create 1 more operation, and sync the journal
         # verify that there are no calls to UFM controller, because the
         # first row was not valid (exit_after_run = true)
-        self._test_thread_processing(sdn_const.PUT,
+        self._test_worker_processing(sdn_const.PUT,
                                      sdn_const.NETWORK, expected_calls=0)
 
         # validate that all the rows are in 'pending' state
@@ -1181,7 +1223,7 @@ class SdnDriverTestCase(SdnConfigBase):
 
         with mock.patch('requests.request',
                         side_effect=request) as mock_request:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
         rows = {row.object_type: row
                 for row in db.get_all_db_rows(self.context)}
         return mock_request, rows[sdn_const.PORT], rows[sdn_const.NETWORK]
@@ -1215,7 +1257,7 @@ class SdnDriverTestCase(SdnConfigBase):
             'or more hosts')
         with self._limit_row_fetches(), \
                 mock.patch('requests.request', return_value=response):
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
 
         row = db.get_all_db_rows(self.context)[0]
         self.assertEqual(sdn_const.PENDING, row.state)
@@ -1247,7 +1289,7 @@ class SdnDriverTestCase(SdnConfigBase):
         response = self._response(requests.codes.accepted, '"app/jobs/1"')
         with mock.patch('requests.request',
                         return_value=response) as mock_request:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
         return [c[0][0] for c in mock_request.call_args_list]
 
     def test_port_delete_then_post_from_same_second(self):
@@ -1271,7 +1313,7 @@ class SdnDriverTestCase(SdnConfigBase):
         # A failed job counts towards retry_count, so the DELETE ends FAILED
         # and stops holding the POST that waits for it.
         self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         context = self._get_mock_port_operation_context()
         db.create_pending_row(self.context, sdn_const.PORT,
                               context.current['id'], sdn_const.DELETE,
@@ -1283,7 +1325,7 @@ class SdnDriverTestCase(SdnConfigBase):
         response = self._response(requests.codes.ok,
                                   jsonutils.dumps({'Status': 'Failed'}))
         with mock.patch('requests.request', return_value=response):
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
 
         row = db.get_all_db_rows(self.context)[0]
         self.assertEqual(sdn_const.FAILED, row.state)
@@ -1343,11 +1385,9 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
     def setUp(self):
         super(SdnPkeyProvisioningTestCase, self).setUp()
         self.context = nl_context.get_admin_context()
-        mock.patch.object(journal.SdnJournalThread,
-                          'start_sync_thread').start()
         self.mech = sdn_mech_driver.SDNMechanismDriver()
         self.mech.initialize()
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         self.addCleanup(self._db_cleanup)
 
     def _rows(self):
@@ -1952,7 +1992,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
                                   'provisioning_complete') as complete, \
                 mock.patch.object(plugin.Ml2Plugin,
                                   'update_port_status') as set_status:
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
         return complete, set_status
 
     def _sync_pending(self, response=None, side_effect=None):
@@ -1960,7 +2000,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
                         side_effect=side_effect), \
                 mock.patch.object(plugin.Ml2Plugin,
                                   'update_port_status') as set_status:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
         return set_status
 
     def _assert_port_failed(self, port_id, set_status):
@@ -1979,7 +2019,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         response = self._response(requests.codes.ok,
                                   jsonutils.dumps({'Status': 'Completed'}))
         with mock.patch('requests.request', return_value=response):
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
 
         self.assertFalse(self._is_blocked(port_id))
 
@@ -2112,7 +2152,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
 
     def test_unreadable_job_failing_after_retries_fails_port(self):
         self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         port_id, row = self._make_blocked_port()
         db.update_db_row_job_id(self.context, row, 'app/jobs/1')
         db.update_db_row_state(self.context, row, sdn_const.MONITORING)
@@ -2121,7 +2161,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
                                                     'not json')), \
                 mock.patch.object(plugin.Ml2Plugin,
                                   'update_port_status') as set_status:
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
         self._assert_port_failed(port_id, set_status)
 
     def test_rejected_post_fails_port(self):
@@ -2184,7 +2224,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         self.assertIn('(retry 1 of unlimited)', '\n'.join(logs.output))
 
         self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         self._db_cleanup()
         port_id, _row = self._make_blocked_port()
         with self.assertLogs(journal.__name__, 'ERROR') as logs:
@@ -2194,7 +2234,7 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
 
     def test_post_failing_after_retries_fails_port(self):
         self.conf.set_override('retry_count', 0, sdn_const.GROUP_OPT)
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         port_id, _row = self._make_blocked_port()
         set_status = self._sync_pending(
             self._response(requests.codes.service_unavailable))
@@ -2207,10 +2247,6 @@ class SdnSegmentCheckTestCase(SdnConfigBase):
     def setUp(self):
         super(SdnSegmentCheckTestCase, self).setUp()
         self.context = nl_context.get_admin_context()
-        mock.patch.object(journal.SdnJournalThread,
-                          'start_sync_thread').start()
-        mock.patch.object(journal.SdnJournalThread,
-                          '_start_sync_timer').start()
         self.conf.set_override('physical_networks', ['physnet1'],
                                sdn_const.GROUP_OPT)
         self.mech = sdn_mech_driver.SDNMechanismDriver()

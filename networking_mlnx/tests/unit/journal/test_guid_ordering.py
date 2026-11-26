@@ -51,11 +51,9 @@ class SdnJournalTestBase(test_mechanism_sdn.SdnConfigBase):
     def setUp(self):
         super(SdnJournalTestBase, self).setUp()
         self.context = nl_context.get_admin_context()
-        mock.patch.object(journal.SdnJournalThread,
-                          'start_sync_thread').start()
         self.mech = sdn_mech_driver.SDNMechanismDriver()
         self.mech.initialize()
-        self.thread = journal.SdnJournalThread()
+        self.worker = journal.SdnJournalWorker()
         self.addCleanup(self._db_cleanup)
 
 
@@ -148,7 +146,7 @@ class TestGuidOrdering(SdnJournalTestBase):
         with mock.patch('requests.request') as request, \
                 mock.patch.object(plugin.Ml2Plugin,
                                   'update_port_status') as set_status:
-            self.thread._sync_pending_rows(self.context, False)
+            self.worker._sync_pending_rows(self.context, False)
 
         request.assert_not_called()
         post = [r for r in self._rows() if r.operation == sdn_const.POST][0]
@@ -227,7 +225,7 @@ class TestReleaseBeforeCompleting(SdnJournalTestBase):
         response = self._response(requests.codes.ok,
                                   jsonutils.dumps({'Status': 'Completed'}))
         with mock.patch('requests.request', return_value=response):
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
 
     def test_failed_release_is_retried(self):
         port_id, row = self._make_blocked_port()

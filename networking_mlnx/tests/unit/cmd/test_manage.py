@@ -264,7 +264,7 @@ class SdnJournalCommandTestCase(testlib_api.SqlTestCase):
         self.assertIsNone(row.job_id)
 
     def test_retry_completes_when_controller_has_no_port(self):
-        # The sync thread sends the retried deletion, and the controller's
+        # The journal worker sends the retried deletion, and the controller's
         # 404 shows that it is done.
         cfg.CONF.set_override('url', 'http://127.0.0.1/ufmRestV3', 'sdn')
         cfg.CONF.set_override('token', 'token', 'sdn')
@@ -275,13 +275,9 @@ class SdnJournalCommandTestCase(testlib_api.SqlTestCase):
         response = requests.Response()
         response.status_code = requests.codes.not_found
         response._content = b''
-        with mock.patch.object(journal.SdnJournalThread,
-                               'start_sync_thread'), \
-                mock.patch.object(journal.SdnJournalThread,
-                                  '_start_sync_timer'):
-            thread = journal.SdnJournalThread()
+        worker = journal.SdnJournalWorker()
         with mock.patch('requests.request', return_value=response) as send:
-            thread._sync_pending_rows(self.context, False)
+            worker._sync_pending_rows(self.context, False)
         self.assertTrue(send.call_args.kwargs['url'].endswith(
             row.object_uuid))
         self.assertEqual(sdn_const.COMPLETED,

@@ -25,12 +25,13 @@ from networking_mlnx.plugins.ml2.drivers.sdn import constants as sdn_const
 from networking_mlnx.tests.unit.journal import test_guid_ordering
 
 
-class TestConcurrentJournalThreads(test_guid_ordering.SdnJournalTestBase):
-    """Journal threads that read a MONITORING row before another changed it
+class TestConcurrentJournalWorkers(test_guid_ordering.SdnJournalTestBase):
+    """Journal workers that read a MONITORING row before another changed it
 
-    Every journal thread checks the jobs of all MONITORING rows, so one may
-    act on a row that another thread has already completed, retried or
-    failed, and that may have been sent again since.
+    The journal worker of each host that runs neutron-periodic-workers
+    checks the jobs of all MONITORING rows, so one may act on a row that
+    another worker has already completed, retried or failed, and that may
+    have been sent again since.
     """
 
     def _monitor(self, row, job_id):
@@ -39,7 +40,7 @@ class TestConcurrentJournalThreads(test_guid_ordering.SdnJournalTestBase):
         return db.get_row(self.context, row.id)
 
     def _sync_job(self, rows, status=None, text=None):
-        """Check the jobs of rows, as a thread that read them earlier
+        """Check the jobs of rows, as a worker that read them earlier
 
         The controller answers with the job's status, or with text.
         """
@@ -53,11 +54,11 @@ class TestConcurrentJournalThreads(test_guid_ordering.SdnJournalTestBase):
                                   'provisioning_complete') as complete, \
                 mock.patch.object(plugin.Ml2Plugin,
                                   'update_port_status') as set_status:
-            self.thread._sync_progress_rows(self.context)
+            self.worker._sync_progress_rows(self.context)
         return complete, set_status
 
     def _resend(self, row, job_id):
-        """Retry a row's failed job, and send it again, as another thread"""
+        """Retry a row's failed job, and send it again, as another worker"""
         db.update_pending_db_row_retry(self.context,
                                        db.get_row(self.context, row.id), -1)
         return self._monitor(db.get_row(self.context, row.id), job_id)
@@ -140,7 +141,7 @@ class TestConcurrentJournalThreads(test_guid_ordering.SdnJournalTestBase):
     def test_port_of_row_out_of_retries_is_failed_once(self):
         port_id, row = self._make_blocked_port()
         stale = self._monitor(row, 'app/jobs/1')
-        self.thread._row_retry_count = 0
+        self.worker._row_retry_count = 0
 
         _complete, first = self._sync_job([stale], text='not JSON')
         _complete, second = self._sync_job([stale], text='not JSON')
