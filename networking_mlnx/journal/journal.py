@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
 import html.parser
 import re
 import threading
@@ -148,28 +149,77 @@ def _get_blocked_port_id_locked(context, row):
     unbind, rebind or move of the port waits, so the port is still the one
     that the row holds when the caller acts on it.
     """
-    if (row.object_type != sdn_const.PORT or
-            row.operation != sdn_const.POST):
+    if not _lock_port_binding_of_post(context, row):
         return None
-    # Lock before anything else is read, so that the reads that follow see
-    # any change that committed while this waited for the lock.
-    db.lock_port_binding(context, row.object_uuid)
     return _get_blocked_port_id(context, row)
 
 
-@db_api.retry_if_session_inactive()
-def _release_port(context, row):
-    """Remove the provisioning block that the row holds, if any
+def _lock_port_binding_of_post(context, row):
+    """Lock the binding of the port that a port's POST row sends
 
-    :returns: the ID of the port released, or None
+    Lock it before anything else is read, so that the reads that follow see
+    any change that committed while this waited for the lock.
+
+    :returns: True if the row is a port's POST, so that the binding is
+              locked
+    """
+    if (row.object_type != sdn_const.PORT or
+            row.operation != sdn_const.POST):
+        return False
+    db.lock_port_binding(context, row.object_uuid)
+    return True
+
+
+@db_api.retry_if_session_inactive()
+def _complete_row(context, row):
+    """Release the port that a MONITORING row holds, if any, and complete it
+
+    Both happen in one transaction, which locks the row, so that a journal
+    thread that read the row before another one changed it can't act on
+    it.
+
+    :returns: the completed row, or None if the row has changed since it
+              was read, and the ID of the port released, or None
     """
     with db_api.CONTEXT_WRITER.using(context):
-        port_id = _get_blocked_port_id_locked(context, row)
+        # Lock the port's binding before the row, in the order that ML2
+        # locks them when it records a row, so that neither waits for the
+        # other.
+        _lock_port_binding_of_post(context, row)
+        locked = db.lock_monitoring_row(context, row)
+        if not locked:
+            return None, None
+        port_id = _get_blocked_port_id(context, locked)
         if port_id:
             provisioning_blocks.remove_provisioning_component(
                 context, port_id, resources.PORT,
                 sdn_const.PROVISIONING_ENTITY)
-    return port_id
+        db.update_db_row_state(context, locked, sdn_const.COMPLETED)
+    return locked, port_id
+
+
+@db_api.retry_if_session_inactive()
+def _update_monitored_row(context, row, update):
+    """Call update(context, row) on a MONITORING row, while it is locked
+
+    :returns: the row as updated, or None if the row has changed since it
+              was read, so that it was left alone
+    """
+    with db_api.CONTEXT_WRITER.using(context):
+        locked = db.lock_monitoring_row(context, row)
+        if locked:
+            update(context, locked)
+    return locked
+
+
+def _log_row_changed(row):
+    LOG.debug("Journal row %(row)s for %(operation)s %(type)s %(uuid)s has "
+              "changed since job %(job_id)s was checked, so another journal "
+              "thread has handled it", {'row': row.id,
+                                        'operation': row.operation,
+                                        'type': row.object_type,
+                                        'uuid': row.object_uuid,
+                                        'job_id': row.job_id})
 
 
 @db_api.retry_if_session_inactive()
@@ -180,20 +230,25 @@ def _set_port_provisioned(context, port_id):
         context, port_id, resources.PORT, sdn_const.PROVISIONING_ENTITY)
 
 
-def _complete_port_provisioning(context, row):
-    """Release the port that the row holds, once its job has completed
+def _complete_monitored_row(context, row):
+    """Complete a row whose job has completed, and release its port
 
-    :returns: False if the port couldn't be released, so that the caller
-              tries again later, otherwise True.
+    If releasing the port fails, the row stays MONITORING, so that this is
+    tried again at the next sync.
     """
     try:
-        port_id = _release_port(context, row)
+        completed, port_id = _complete_row(context, row)
     except Exception:
-        # The port stays DOWN until this is tried again.
-        LOG.exception("Failed to release port %s", row.object_uuid)
-        return False
+        # A port that the row holds stays DOWN until this is tried again.
+        LOG.exception("Failed to complete %(operation)s %(type)s %(uuid)s",
+                      {'operation': row.operation, 'type': row.object_type,
+                       'uuid': row.object_uuid})
+        return
+    if not completed:
+        _log_row_changed(row)
+        return
     if not port_id:
-        return True
+        return
     LOG.info("SDN Controller added port %s to its partition key, "
              "released it", port_id)
     try:
@@ -202,7 +257,6 @@ def _complete_port_provisioning(context, row):
         # The block is gone, so trying again would find nothing to release.
         # The port stays DOWN, so Nova and Ironic fail when they time out.
         LOG.exception("Failed to make port %s ACTIVE", port_id)
-    return True
 
 
 def _fail_port_provisioning(context, row):
@@ -481,8 +535,24 @@ class SdnJournalThread(object):
                 # timer interval
                 break
 
-    def _retry_row(self, context, row):
-        db.update_pending_db_row_retry(context, row, self._row_retry_count)
+    def _retry_row(self, context, row, monitored=False):
+        """Count a retry of the row, and fail it after too many
+
+        :param monitored: the row is MONITORING, so another journal thread
+                          may have changed it since it was read
+        """
+        if monitored:
+            updated = _update_monitored_row(
+                context, row, functools.partial(
+                    db.update_pending_db_row_retry,
+                    retry_count=self._row_retry_count))
+            if not updated:
+                _log_row_changed(row)
+                return
+            row = updated
+        else:
+            db.update_pending_db_row_retry(context, row,
+                                           self._row_retry_count)
         log_args = {'operation': row.operation, 'type': row.object_type,
                     'uuid': row.object_uuid, 'retry': row.retry_count,
                     'max': (self._row_retry_count
@@ -496,8 +566,20 @@ class SdnJournalThread(object):
                      "(retry %(retry)s of %(max)s)", log_args)
 
     @staticmethod
-    def _fail_row(context, row):
-        db.update_db_row_state(context, row, sdn_const.FAILED)
+    def _fail_row(context, row, monitored=False):
+        """Fail the row, and the port that it holds DOWN, if any
+
+        :param monitored: as for _retry_row()
+        """
+        if monitored:
+            failed = _update_monitored_row(
+                context, row, functools.partial(
+                    db.update_db_row_state, state=sdn_const.FAILED))
+            if not failed:
+                _log_row_changed(row)
+                return
+        else:
+            db.update_db_row_state(context, row, sdn_const.FAILED)
         _fail_port_provisioning(context, row)
 
     def _sync_progress_rows(self, context):
@@ -527,12 +609,7 @@ class SdnJournalThread(object):
                                       'operation': row.operation,
                                       'type': row.object_type,
                                       'uuid': row.object_uuid})
-                            # Keep monitoring the row until its port has
-                            # been released, so that a failure to release
-                            # it is retried.
-                            if _complete_port_provisioning(context, row):
-                                db.update_db_row_state(
-                                    context, row, sdn_const.COMPLETED)
+                            _complete_monitored_row(context, row)
                             continue
                         if job_status in ("Pending", "Running"):
                             LOG.debug("SDN Controller Job id %(job_id)s is "
@@ -556,9 +633,9 @@ class SdnJournalThread(object):
                         if _get_blocked_port_id(context, row):
                             # Fail the instance's boot rather than retry
                             # while Nova waits.
-                            self._fail_row(context, row)
+                            self._fail_row(context, row, monitored=True)
                         else:
-                            self._retry_row(context, row)
+                            self._retry_row(context, row, monitored=True)
                     except (ValueError, AttributeError):
                         # Send the request again, up to retry_count times,
                         # rather than monitor a job that can't be read,
@@ -574,7 +651,7 @@ class SdnJournalThread(object):
                                    'response':
                                        self.client.describe_response(
                                            response)})
-                        self._retry_row(context, row)
+                        self._retry_row(context, row, monitored=True)
                 else:
                     LOG.error("Failed to get SDN Controller job "
                               "%(job_id)s for %(operation)s %(type)s "
@@ -585,13 +662,13 @@ class SdnJournalThread(object):
                                'uuid': row.object_uuid,
                                'response':
                                    self.client.describe_response(response)})
-                    self._retry_row(context, row)
+                    self._retry_row(context, row, monitored=True)
 
             except sdn_exc.SDNRequestError as e:
                 LOG.error("Failed to get SDN Controller job %(job_id)s for "
                           "%(operation)s %(type)s %(uuid)s: %(error)s",
                           self._job_log_args(row, e))
-                self._retry_row(context, row)
+                self._retry_row(context, row, monitored=True)
             except sdn_exc.SDNUnreachableError as e:
                 # The job may well be fine, so keep monitoring it rather
                 # than send the request again, which would start another
@@ -608,7 +685,7 @@ class SdnJournalThread(object):
                 LOG.error("Failed to get SDN Controller job %(job_id)s for "
                           "%(operation)s %(type)s %(uuid)s: %(error)s",
                           self._job_log_args(row, e))
-                self._retry_row(context, row)
+                self._retry_row(context, row, monitored=True)
 
     @staticmethod
     def _job_log_args(row, error):

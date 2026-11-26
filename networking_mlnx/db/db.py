@@ -314,6 +314,26 @@ def get_all_monitoring_db_row_by_oldest(context):
     return rows
 
 
+def lock_monitoring_row(context, row):
+    """Lock a MONITORING row, unless it has changed since it was read
+
+    Every journal thread checks the jobs of all MONITORING rows, so another
+    one may already have completed, retried or failed the row, and the row
+    may since have been sent again, with a new job. The caller must be in a
+    writer transaction, and act only on the row that this returns.
+
+    :returns: the locked row, or None if the row is no longer MONITORING
+              the same job with the same retry count
+    """
+    journal = sdn_journal_db.SdnJournal
+    return context.session.query(journal).filter(
+        journal.id == row.id,
+        journal.state == sdn_const.MONITORING,
+        journal.job_id == row.job_id,
+        journal.retry_count == row.retry_count).with_for_update(
+    ).one_or_none()
+
+
 @db_api.retry_if_session_inactive()
 @db_api.CONTEXT_WRITER
 def update_db_row_state(context, row, state):
