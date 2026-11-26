@@ -46,6 +46,10 @@ LOG = logging.getLogger(__name__)
 # The longest time to wait before sending a failed request again, unless
 # [sdn] sync_timeout is longer.
 MAX_RETRY_DELAY = 300
+# How long after a port's POST has failed to keep asking for the port to
+# be set to ERROR, if an RPC worker didn't. Nova's default
+# vif_plugging_timeout, after which an instance's boot has failed anyway.
+FAIL_AGAIN_WINDOW = 300
 
 
 # The job links that UFM's HTML replies contain, such as /app/jobs/1. They
@@ -274,7 +278,8 @@ def _fail_port_provisioning(context, row):
         directory.get_plugin().update_port_status(
             context, port_id, n_const.PORT_STATUS_ERROR)
     except Exception:
-        # The port stays DOWN, so Nova fails the boot when it times out.
+        # The port stays DOWN. The journal asks again for a while; see
+        # SdnJournalWorker._fail_ports_again().
         LOG.exception("Failed to set port %s to ERROR", row.object_uuid)
 
 
@@ -299,6 +304,7 @@ class SdnJournalWorker(worker.PeriodicWorker):
         self._retry_delays = self._get_retry_delays(self._sync_timeout)
         self._rpc = None
         self._rpc_timed_out = False
+        self._failed_row_ids = set()
         super(SdnJournalWorker, self).__init__(
             check_func=self.sync, interval=self._sync_timeout,
             initial_delay=self._sync_timeout, desc='SDN journal')
@@ -346,19 +352,48 @@ class SdnJournalWorker(worker.PeriodicWorker):
     def _fail_port_provisioning(self, context, row):
         """Set the port that the row holds DOWN, if any, to ERROR
 
-        This is asked of an RPC worker even after a call has timed out,
-        since it isn't tried again: the row has failed. If it fails, the
-        port keeps its provisioning block, so it stays DOWN, and Nova and
-        Ironic fail when they time out.
+        If the RPC call fails, the port keeps its provisioning block, so it
+        stays DOWN, and _fail_ports_again() asks again at the next sync.
         """
         if (row.object_type != sdn_const.PORT or
                 row.operation != sdn_const.POST):
             return
+        self._failed_row_ids.add(row.id)
+        if self._rpc_timed_out:
+            LOG.debug("Not asking an RPC worker to set port %s to ERROR "
+                      "until the next sync", row.object_uuid)
+            return
         try:
             self.rpc.fail_port(context, row)
+        except oslo_messaging.MessagingTimeout:
+            self._rpc_timed_out = True
+            LOG.error("No RPC worker answered the request to set port %s "
+                      "to ERROR; check that neutron-rpc-server is running. "
+                      "Trying again at the next sync", row.object_uuid)
         except Exception:
             LOG.exception("Failed to ask an RPC worker to set port %s to "
-                          "ERROR; it stays DOWN instead", row.object_uuid)
+                          "ERROR; trying again at the next sync",
+                          row.object_uuid)
+
+    def _fail_ports_again(self, context):
+        """Ask again for the ports of failed rows to be set to ERROR
+
+        For the failed port POSTs whose port is still held DOWN, but not
+        ERROR, because an RPC call failed, for up to FAIL_AGAIN_WINDOW
+        seconds after the row failed. Rows failed in this sync have been
+        asked about already.
+        """
+        for row in db.get_failed_port_posts_not_in_error(
+                context, FAIL_AGAIN_WINDOW):
+            if self._rpc_timed_out:
+                return
+            if (row.id in self._failed_row_ids or
+                    not _get_blocked_port_id(context, row)):
+                continue
+            LOG.info("Asking again for port %(port)s, whose journal row "
+                     "%(row)s failed, to be set to ERROR",
+                     {'port': row.object_uuid, 'row': row.id})
+            self._fail_port_provisioning(context, row)
 
     def sync(self, exit_after_run=False):
         """Sync the journal once
@@ -367,10 +402,13 @@ class SdnJournalWorker(worker.PeriodicWorker):
                                first that has to wait
         """
         self._rpc_timed_out = False
+        self._failed_row_ids = set()
         try:
             context = nl_context.get_admin_context()
             self._sync_pending_rows(context, exit_after_run)
             self._sync_progress_rows(context)
+            # Last, so that it can't hold up new rows.
+            self._fail_ports_again(context)
         except Exception:
             # Keep the worker running, to sync again at the next interval.
             LOG.exception("Failed to sync the SDN journal")

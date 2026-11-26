@@ -227,6 +227,31 @@ def port_has_provisioning_block(context, port_id, entity):
 
 
 @db_api.CONTEXT_READER
+def get_failed_port_posts_not_in_error(context, max_age):
+    """Return the failed port POSTs whose port is held but not ERROR
+
+    Those whose port the journal couldn't set to ERROR, that failed at
+    most max_age seconds ago, oldest first. Each port still has the SDN
+    provisioning block, which only its latest POST holds; see
+    journal._get_blocked_port_id().
+    """
+    journal = sdn_journal_db.SdnJournal
+    now = context.session.execute(func.now()).scalar()
+    return context.session.query(journal).join(
+        models_v2.Port, models_v2.Port.id == journal.object_uuid).join(
+        pb_model.ProvisioningBlock,
+        pb_model.ProvisioningBlock.standard_attr_id ==
+        models_v2.Port.standard_attr_id).filter(
+        journal.state == sdn_const.FAILED,
+        journal.object_type == sdn_const.PORT,
+        journal.operation == sdn_const.POST,
+        journal.last_retried >= now - datetime.timedelta(seconds=max_age),
+        pb_model.ProvisioningBlock.entity == sdn_const.PROVISIONING_ENTITY,
+        models_v2.Port.status != n_const.PORT_STATUS_ERROR).order_by(
+        asc(journal.created_at), asc(journal.seqnum)).all()
+
+
+@db_api.CONTEXT_READER
 def get_all_db_rows(context):
     return context.session.query(sdn_journal_db.SdnJournal).all()
 

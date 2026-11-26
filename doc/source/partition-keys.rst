@@ -68,9 +68,10 @@ What the deployment has to provide:
   ``ACTIVE``, or ``ERROR``, once the controller has handled it, so
   ``[DEFAULT] rpc_workers`` must not be ``0``. Without either, ports held
   ``DOWN`` stay ``DOWN``. If no RPC worker answers, the journal logs an
-  error, and tries again at its next sync to make the ports that the
-  controller has added ``ACTIVE``. Ports that the controller failed to add
-  stay ``DOWN`` rather than ``ERROR``.
+  error. It asks again at its next sync for the ports that the controller
+  has added to be made ``ACTIVE`` and, for up to five minutes after the
+  controller failed to add a port, for it to be set to ``ERROR``; after
+  that, the port stays ``DOWN``.
 * The subnet manager must give virtual functions, hypervisors and bare metal
   nodes only limited membership of the default partition. A port is added to
   its network's partition key, but nothing removes it from the default

@@ -13,8 +13,10 @@ upgrade:
     configured as for ``neutron-server`` and ``[DEFAULT] rpc_workers`` not
     ``0``: otherwise nothing is sent to the SDN controller, or ports held
     ``DOWN`` until the controller has added them to their partition key
-    stay ``DOWN``. If no RPC worker answers, the journal logs an error. The
-    journal's messages are now in ``neutron-periodic-workers``' log.
+    stay ``DOWN``. If no RPC worker answers, the journal logs an error and
+    asks again at later syncs, for a port that the controller failed to
+    add for up to five minutes. The journal's messages are now in
+    ``neutron-periodic-workers``' log.
   - |
     The journal now syncs every ``[sdn] sync_timeout`` seconds, 10 by
     default. It sends a change to the SDN controller up to that long after
