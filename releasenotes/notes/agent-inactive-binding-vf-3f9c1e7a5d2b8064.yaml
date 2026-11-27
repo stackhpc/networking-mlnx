@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    ``neutron-mlnx-agent`` no longer reports a port down, and logs an error
+    that it isn't defined, when its virtual function is attached on a host
+    where the port's binding isn't active yet. It configures the virtual
+    function once Nova activates the binding on the host, also when the
+    virtual function was attached before then.

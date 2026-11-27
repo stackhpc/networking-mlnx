@@ -14,7 +14,11 @@ Contents:
    readme
    installation
    usage
+   partition-keys
+   devstack
+   live-migration
    contributing
+   releasing
 
 Indices and tables
 ==================

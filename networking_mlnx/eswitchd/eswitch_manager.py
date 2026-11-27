@@ -187,6 +187,25 @@ class EmbSwitch(object):
             mac = macs.get(vf_index)
         return mac
 
+    def get_vfs_ib_macs(self, pci_slots):
+        """Get the mac addresses derived from VFs' GUIDs, assigned or not
+
+        Unlike get_device_ib_mac(), this also reads the GUID of a VF that
+        still has a netdev on the host, for example one that Nova has
+        plugged for an instance that it hasn't attached the VF to yet. The
+        VFs are passed to the device wrapper in one call, which reads all
+        the admin GUIDs of the port once on ConnectX-3, and each VF's GUID
+        on ConnectX-4 and later.
+
+        :param pci_slots: VF pci addresses
+        :return: dict of the MAC address of each VF, or None, by pci address
+        """
+        idx_to_slot = {self._get_vf_index(pci_slot): pci_slot
+                       for pci_slot in pci_slots}
+        macs = self.pf_dev_wrapper.get_vfs_macs_ib(list(idx_to_slot))
+        return {pci_slot: macs.get(vf_index)
+                for vf_index, pci_slot in idx_to_slot.items()}
+
     def set_device_ib_mac(self, pci_slot, mac=None):
         """Set IB mac address for given virtual function address
 
@@ -321,6 +340,55 @@ class ESwitchManager(object):
         embedded_switch = self._get_emb_eswitch(pci_slot)
         if embedded_switch:
             embedded_switch.set_device_ib_mac(pci_slot, mac)
+
+    def get_device_ib_mac(self, pci_slot):
+        """Get the mac address of an assigned VF, derived from its GUID
+
+        :param pci_slot: VF pci address
+        :return: MAC address, or None if the VF is not assigned
+        """
+        embedded_switch = self._get_emb_eswitch(pci_slot)
+        if embedded_switch:
+            return embedded_switch.get_device_ib_mac(pci_slot)
+
+    def get_vfs_ib_macs(self, pci_slots):
+        """Get the mac addresses derived from VFs' GUIDs, assigned or not
+
+        The VFs of each embedded switch are read in one call. If that
+        fails, each of them is read on its own, so that only those that
+        fail are unreadable.
+
+        :param pci_slots: VF pci addresses
+        :return: (macs, unreadable): dict of the MAC address of each VF
+                 whose GUID could be read, or None if the VF isn't managed
+                 by eswitchd, by pci address; and the set of the pci
+                 addresses of the VFs whose GUID couldn't be read
+        """
+        macs = {}
+        unreadable = set()
+        by_switch = {}
+        for pci_slot in pci_slots:
+            embedded_switch = self._get_emb_eswitch(pci_slot)
+            if embedded_switch:
+                by_switch.setdefault(embedded_switch, []).append(pci_slot)
+            else:
+                macs[pci_slot] = None
+        for embedded_switch, slots in by_switch.items():
+            try:
+                macs.update(embedded_switch.get_vfs_ib_macs(slots))
+                continue
+            except Exception as e:
+                LOG.warning("Failed to get the GUIDs of VFs %(pcis)s, "
+                            "trying each one: %(exc)s",
+                            {'pcis': slots, 'exc': e})
+            for pci_slot in slots:
+                try:
+                    macs.update(embedded_switch.get_vfs_ib_macs([pci_slot]))
+                except Exception as e:
+                    LOG.warning("Failed to get the GUID of VF %(pci)s: "
+                                "%(exc)s", {'pci': pci_slot, 'exc': e})
+                    unreadable.add(pci_slot)
+        return macs, unreadable
 
     def config_vlan_ib(self, pci_slot, vlan):
         """Set VF IB VLAN (Set Infiniband PKEY for VF)

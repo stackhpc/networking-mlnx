@@ -35,7 +35,7 @@ class MaintenanceWorker(PeriodicWorker):
     def _execute_op(self, operation, context):
         op_details = operation.__name__
         if operation.__doc__:
-            op_details += " (%s)" % operation.func_doc
+            op_details += " (%s)" % operation.__doc__
 
         try:
             LOG.info("Starting maintenance operation %s.", op_details)

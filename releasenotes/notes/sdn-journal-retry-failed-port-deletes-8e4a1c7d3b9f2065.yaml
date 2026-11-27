@@ -1,0 +1,25 @@
+---
+features:
+  - |
+    The ``mlnx_sdn_assist`` maintenance task now sends a failed port
+    deletion to the SDN controller again
+    ``[sdn] failed_port_delete_retry_interval`` seconds, 3600 by default,
+    after it last failed. Until the controller has deleted the port, other
+    ports with the same GUID can't be added to a partition key. A deletion
+    that could undo something newer isn't sent: one that the journal has a
+    newer row of the port for, of a port that is bound again, or of a port
+    whose GUID another port bound on the same network uses. Nor is one whose
+    row doesn't record the port's GUID and network. Instead, a warning names
+    the row to check and delete with ``neutron-mlnx-manage journal``, once
+    per interval. Set the option to ``-1`` to leave failed port deletions to
+    an operator.
+upgrade:
+  - |
+    Failed port deletions already in the ``sdn_journal`` table, including
+    any from earlier releases, are sent to the SDN controller again once
+    ``[sdn] failed_port_delete_retry_interval`` has passed after the
+    upgrade, unless they are refused as described above. With the default
+    ``[sdn] retry_count`` of -1, one that the controller keeps rejecting is
+    then retried until it succeeds. To check them first, list them with
+    ``neutron-mlnx-manage journal list --state failed``, or set the option
+    to ``-1`` until you have.

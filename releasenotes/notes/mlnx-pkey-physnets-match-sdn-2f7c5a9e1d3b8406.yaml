@@ -1,0 +1,9 @@
+---
+security:
+  - |
+    ``mlnx_infiniband`` now treats a VLAN segment's partition key as
+    enforced only if ``mlnx_sdn_assist`` syncs the physical networks of all
+    the network's segments, which is when it sends the network's ports to
+    the SDN controller. Previously a port on a network with segments on
+    several physical networks could be bound while the SDN driver ignored it,
+    and so was never added to its partition key.

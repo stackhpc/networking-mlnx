@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    The ``mlnx_infiniband`` mechanism driver no longer deletes all of a
+    port's extra DHCP options when the port is unbound. Only the
+    ``client-id`` option that the driver added is removed.

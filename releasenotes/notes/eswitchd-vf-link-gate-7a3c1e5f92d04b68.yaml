@@ -1,0 +1,11 @@
+---
+security:
+  - |
+    ``eswitchd`` now disables the link of a virtual function when it is
+    plugged for a port, and only enables it when
+    ``neutron-mlnx-agent`` asks with the port's MAC address and the virtual
+    function has the GUID derived from it. A virtual function left with
+    another port's GUID, for example after Nova ignored a failed
+    ``ebrctl add-port``, can no longer reach the fabric. Failures to enable
+    or disable a link are now reported to the agent, rather than logged and
+    reported as successful.

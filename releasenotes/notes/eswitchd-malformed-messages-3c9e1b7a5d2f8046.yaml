@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    ``eswitchd`` no longer exits when it receives a message that is not a
+    JSON object, such as a stray connection to its ZeroMQ port. It now logs
+    an error and replies with a failure.

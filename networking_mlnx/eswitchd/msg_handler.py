@@ -16,6 +16,7 @@
 from oslo_log import log as logging
 
 from networking_mlnx.eswitchd.common import constants
+from networking_mlnx.eswitchd.common import exceptions
 
 LOG = logging.getLogger(__name__)
 
@@ -42,11 +43,19 @@ class BasicMessageHandler(object):
     def validate_vnic_type(self, vnic_type):
         return vnic_type == constants.VIF_TYPE_HOSTDEV
 
-    def build_response(self, status, reason=None, response=None):
+    def build_response(self, status, reason=None, response=None,
+                       error=None):
+        """Build the reply to a request
+
+        :param error: on failure, a code for the cause, for the failures
+                      that the client handles differently from others
+        """
         if status:
             msg = {'status': 'OK', 'response': response}
         else:
             msg = {'status': 'FAIL', 'reason': reason}
+            if error:
+                msg['error'] = error
         return msg
 
 
@@ -130,6 +139,23 @@ class GetVnics(BasicMessageHandler):
         return self.build_response(True, response=vnics)
 
 
+class GetPluggedVnics(BasicMessageHandler):
+    MSG_ATTRS_MANDATORY_MAP = ()
+
+    def __init__(self, msg):
+        super(GetPluggedVnics, self).__init__(msg)
+
+    def execute(self, eswitch_handler):
+        try:
+            vnics = eswitch_handler.get_plugged_vnics(
+                self.msg.get('skip_plug_ids'))
+        except Exception as e:
+            LOG.error("GetPluggedVnics failed - %s", str(e))
+            return self.build_response(False,
+                                       reason='Get plugged vnics failed')
+        return self.build_response(True, response=vnics)
+
+
 class PortRelease(BasicMessageHandler):
     MSG_ATTRS_MANDATORY_MAP = ('fabric', 'ref_by', 'pci_slot')
 
@@ -177,10 +203,19 @@ class PortUp(BasicMessageHandler):
     def execute(self, eswitch_handler):
         fabric = self.msg['fabric']
         pci_slot = self.msg['pci_slot']
+        mac = self.msg.get('mac')
         try:
-            eswitch_handler.port_up(fabric, pci_slot)
+            eswitch_handler.port_up(fabric, pci_slot, mac)
+        except exceptions.GuidMismatchException as e:
+            # Expected while Nova detaches or replugs the VF. The agent
+            # disables the link when it gets this error code.
+            LOG.warning("Not enabling the link: %s", e)
+            return self.build_response(
+                False, reason='Port up failed: %s' % e,
+                error=constants.ERROR_GUID_MISMATCH)
         except Exception as e:
-            LOG.warning("Port up - %s", str(e))
+            LOG.error("Port up failed - %s", str(e))
+            return self.build_response(False, reason='Port up failed')
         return self.build_response(True, response={})
 
 
@@ -196,7 +231,8 @@ class PortDown(BasicMessageHandler):
         try:
             eswitch_handler.port_down(fabric, pci_slot)
         except Exception as e:
-            LOG.warning("Port down failed - %s", str(e))
+            LOG.error("Port down failed - %s", str(e))
+            return self.build_response(False, reason='Port down failed')
         return self.build_response(True, response={})
 
 
@@ -219,6 +255,7 @@ class MessageDispatch(object):
     MSG_MAP = {'delete_port': DetachVnic,
                'set_vlan': SetVLAN,
                'get_vnics': GetVnics,
+               'get_plugged_vnics': GetPluggedVnics,
                'port_release': PortRelease,
                'port_up': PortUp,
                'port_down': PortDown,

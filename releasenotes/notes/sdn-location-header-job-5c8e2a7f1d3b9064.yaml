@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    When UFM answers a request with an HTML page, such as a port's creation,
+    ``mlnx_sdn_assist``'s journal now finds the job in the reply's
+    ``Location`` header instead of in a link in the page. Only the header's
+    path is used, and the ``[sdn] url`` path, such as ``/ufmRestV3``, is
+    removed from its start, so that the job is checked at the controller's
+    URL.

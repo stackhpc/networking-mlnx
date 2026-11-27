@@ -1,0 +1,18 @@
+---
+security:
+  - |
+    ``mlnx_sdn_assist`` now refuses a segment that would give a network
+    segments both on physical networks in ``[sdn] physical_networks`` and on
+    others. It only sends a network's ports to the SDN controller while all
+    the network's segments are on synced physical networks, so adding a
+    segment on an unsynced physical network to a synced network stopped its
+    ports from being sent, including their deletion, which left their GUIDs
+    in the network's partition key. Networks that already mix them aren't
+    synced; check for them after upgrading, and for ports whose GUIDs were
+    left in partition keys.
+upgrade:
+  - |
+    When ``[sdn] sync_enabled`` is ``True`` and ``[sdn] physical_networks``
+    doesn't contain ``*``, creating a network with segments both on synced
+    and on unsynced physical networks, or adding such a segment to a
+    network, now fails.

@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    The SDN journal no longer updates a row that is waiting for another
+    operation, such as a network deletion waiting for its ports' deletions,
+    on every sync. With row-based binary logging and the default
+    ``binlog_row_image=FULL``, each update logged the whole row, including
+    the network or port data it holds, so waiting rows added to the
+    database's binary log volume for as long as they waited.

@@ -48,6 +48,16 @@ class MaintenanceThreadTestCase(testlib_api.SqlTestCaseLight):
             self.assertTrue(mock_log.info.called)
             self.assertFalse(mock_log.exception.called)
 
+    def test__execute_op_with_docstring(self):
+        def operation(context):
+            """Do something"""
+
+        with mock.patch.object(maintenance, 'LOG') as mock_log:
+            self.maintenance_worker._execute_op(operation, self.db_context)
+        mock_log.info.assert_any_call("Starting maintenance operation %s.",
+                                      "operation (Do something)")
+        self.assertFalse(mock_log.exception.called)
+
     def test_multiple_iterations(self):
         # NOTE(wszumski): This used to test using a real worker thread, but
         # we lost this functionality when moving to neutron workers.

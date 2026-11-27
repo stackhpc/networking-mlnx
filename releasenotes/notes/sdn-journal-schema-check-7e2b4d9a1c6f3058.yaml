@@ -1,0 +1,16 @@
+---
+upgrade:
+  - |
+    When ``[sdn] sync_enabled`` is true, ``neutron-server`` now refuses to
+    start if the networking-mlnx database schema is out of date, and names
+    the command to run: ``neutron-db-manage --subproject networking-mlnx
+    upgrade head``. It checks that the ``sdn_journal.state`` column accepts
+    every SDN journal state. Deployments that missed the migration adding
+    the ``monitoring`` state could not record it, so the journal row of
+    every network or port operation that started a UFM job was sent to UFM
+    again and again and never deleted, the ``sdn_journal`` table kept
+    growing, and later operations on the same networks and ports were held
+    behind those rows. These rows were sent again without counting a
+    retry, so ``[sdn] retry_count`` did not limit them. After the schema is
+    upgraded, they are sent to UFM once more, then completed and deleted as
+    usual.

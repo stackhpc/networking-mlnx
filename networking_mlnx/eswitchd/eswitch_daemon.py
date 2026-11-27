@@ -74,24 +74,34 @@ class MlxEswitchDaemon(object):
         self.poller.register(self.socket_os, zmq.POLLIN)
 
     def _handle_msg(self):
-        data = None
-
         msg = self.socket_os.recv()
         sender = self.socket_os
-        if msg:
-            data = jsonutils.loads(msg)
 
         result = {
             "status": "FAIL",
-            "action": data.get("action", "UNKNOWN"),
+            "action": "UNKNOWN",
             "reason": "UNKNOWN"
         }
-        if data:
-            try:
-                result = self.dispatcher.handle_msg(data)
-            except Exception as e:
-                LOG.exception("Exception during message handling - %s", e)
-                result["reason"] = str(e)
+        # A REP socket must reply to each request before it can receive the
+        # next one, so answer malformed messages with a failure rather than
+        # letting the exception stop the daemon.
+        try:
+            data = jsonutils.loads(msg)
+        except Exception as e:
+            LOG.error("Received malformed message - %s", e)
+            result["reason"] = "Malformed message"
+        else:
+            if not isinstance(data, dict):
+                LOG.error("Received message that is not a JSON object")
+                result["reason"] = "Message is not a JSON object"
+            else:
+                result["action"] = data.get("action", "UNKNOWN")
+                try:
+                    result = self.dispatcher.handle_msg(data)
+                except Exception as e:
+                    LOG.exception("Exception during message handling - %s",
+                                  e)
+                    result["reason"] = str(e)
 
         msg = jsonutils.dumps(result)
         sender.send_string(msg)

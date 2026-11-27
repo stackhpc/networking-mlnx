@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    When the SDN controller accepts a create or update request but returns no
+    job to monitor, ``mlnx_sdn_assist``'s journal now records the request as
+    done. Previously the request stayed in the ``processing`` state until the
+    cleanup reset it, and was then sent again. A deletion without a job is
+    sent again, counting towards ``[sdn] retry_count``, since nothing shows it
+    was done. A request that holds an InfiniBand port ``DOWN`` until it is in
+    its partition key still fails, and sets the port to ``ERROR``.

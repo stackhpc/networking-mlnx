@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    The ``mlnx_sdn_assist`` mechanism driver now binds a port to the first
+    segment of its network that it can bind, as other mechanism drivers do.
+    Previously it set a binding for every segment it could bind, and ML2 kept
+    the last one. On a network with several such segments, for example a
+    flat and a VLAN segment, a port that is bound from now on can therefore
+    be bound to another segment than before. Ports that are already bound
+    keep their binding.

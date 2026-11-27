@@ -1,0 +1,18 @@
+---
+fixes:
+  - |
+    The ``mlnx_sdn_assist`` mechanism driver no longer retries a create or
+    update request that the SDN controller rejects with HTTP 400 or 422,
+    such as UFM's ``Missing attribute(s): client-id`` for a port without an
+    InfiniBand client ID. These were treated as connection errors, so with
+    the default ``[sdn] retry_count`` of -1 the request was retried forever,
+    and each retry stopped the rest of the journal from being synced until
+    the next sync interval. The journal entry is now marked as failed and
+    the error is logged. To send a port again, fix it and update it. To
+    send a network again, delete and recreate it.
+    Rejected deletions are still retried, because the controller can reject
+    them only until the resources that use them are removed.
+upgrade:
+  - |
+    Failed ``mlnx_sdn_assist`` journal entries are now deleted after
+    ``[sdn] completed_rows_retention``, like completed ones.

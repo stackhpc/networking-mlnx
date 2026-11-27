@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    The ``mlnx_sdn_assist`` mechanism driver now waits for the SDN
+    controller to finish a job before sending operations that depend on it.
+    For example, it used to delete a network while UFM was still running the
+    job that removes the network's ports, which UFM rejected with
+    ``Network ID cannot be removed because it is associated to one or more
+    hosts``. Similarly, a port could be sent before UFM had finished
+    creating its network. Dependent operations now wait for as long as the
+    job runs. If the job status can't be read, the request is sent again,
+    up to ``[sdn] retry_count`` times.

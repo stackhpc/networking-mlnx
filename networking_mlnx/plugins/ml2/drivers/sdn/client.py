@@ -32,6 +32,12 @@ cfg.CONF.register_opts(config.sdn_opts, sdn_const.GROUP_OPT)
 class SdnRestClient(object):
 
     MANDATORY_ARGS = ('url', 'token')
+    # Responses that mean the request itself is wrong, so sending it again
+    # cannot succeed.
+    REJECTED_STATUS_CODES = (requests.codes.bad_request,
+                             requests.codes.unprocessable_entity)
+    # Controllers can return a whole HTML page as the error.
+    MAX_ERROR_TEXT = 500
 
     @classmethod
     def create_client(cls):
@@ -50,7 +56,7 @@ class SdnRestClient(object):
         self.timeout = timeout
         self.token = token
         self._validate_mandatory_params_exist()
-        self.url.rstrip("/")
+        self.url = self.url.rstrip("/")
         self.verify = verify
         self.headers = {"Authorization": "Basic {0}".format(self.token),
                         **sdn_const.JSON_HTTP_HEADER}
@@ -94,22 +100,52 @@ class SdnRestClient(object):
         LOG.debug("Sending METHOD %(method)s URL %(url)s JSON %(data)s",
                   {'method': method, 'url': urlpath, 'data': data})
 
-        return self._check_response(requests.request(
+        try:
+            response = requests.request(
                 method, url=str(urlpath), headers=self.headers,
-                data=data, verify=self.verify, timeout=self.timeout), method)
+                data=data, verify=self.verify, timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            # For example the controller is unreachable or doesn't answer
+            # in time.
+            raise sdn_exc.SDNUnreachableError(msg=e) from e
+        return self._check_response(response, method)
+
+    @classmethod
+    def describe_response(cls, response, full=False):
+        """Describe a response for the logs
+
+        Includes what is needed to tell why a response couldn't be used,
+        for example that the controller answered with an HTML page and put
+        the job in the Location header. The body is truncated unless full
+        is set.
+        """
+        text = response.text if full else response.text[:cls.MAX_ERROR_TEXT]
+        return ("HTTP %(status)s, Content-Type %(type)s, Location "
+                "%(location)s: %(text)s" %
+                {'status': response.status_code,
+                 'type': response.headers.get('Content-Type'),
+                 'location': response.headers.get('Location'),
+                 'text': text})
 
     def _check_response(self, response, method):
+        if LOG.isEnabledFor(log.DEBUG):
+            LOG.debug("Response to %(method)s %(url)s: %(response)s",
+                      {'method': method, 'url': response.url,
+                       'response': self.describe_response(response,
+                                                          full=True)})
         try:
-            LOG.debug("request status: %d", response.status_code)
             request_found = True
-            if response.text:
-                LOG.debug("request text: %s", response.text)
             if (response.status_code == requests.codes.not_found and
                 method == sdn_const.DELETE):
                 request_found = False
             if (request_found and
                 response.status_code != requests.codes.not_implemented):
                 response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            msg = '%s: %s' % (e, response.text[:self.MAX_ERROR_TEXT])
+            if response.status_code in self.REJECTED_STATUS_CODES:
+                raise sdn_exc.SDNRequestError(msg=msg)
+            raise sdn_exc.SDNConnectionError(msg=msg)
         except Exception as e:
             raise sdn_exc.SDNConnectionError(msg=e)
         return response

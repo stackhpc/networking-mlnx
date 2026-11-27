@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    The ``mlnx_infiniband`` mechanism driver no longer replaces a
+    ``client-id`` DHCP option set by the user when it binds a port, and
+    keeps the port's other extra DHCP options in the port it passes to
+    other mechanism drivers and returns from the API.

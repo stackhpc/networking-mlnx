@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Fixed a race in ``neutron-mlnx-agent`` where a port update received from
+    the Neutron server while the agent was scanning ports could be lost, so
+    the port's binding was not refreshed until the next update or resync.

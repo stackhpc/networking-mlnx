@@ -135,3 +135,76 @@ class TestEswitchUtilsSendMsg(base.BaseTestCase):
         self.poller.poll.side_effect = self._poll
         self.assertEqual({'vnic': 'data'}, self.utils.send_msg('msg'))
         self.assertEqual(2, len(self.sockets))
+
+
+class TestEswitchUtilsParseResponse(base.BaseTestCase):
+
+    def setUp(self):
+        super(TestEswitchUtilsParseResponse, self).setUp()
+        self.utils = utils.EswitchUtils('tcp://127.0.0.1:60001', 100)
+        self.log = mock.patch.object(utils, 'LOG').start()
+
+    def _parse(self, **reply):
+        reply.update(status='FAIL', action='port_up', reason='Port up failed')
+        return self.utils.parse_response_msg(jsonutils.dumps(reply))
+
+    def test_failure_raises_operation_failed(self):
+        e = self.assertRaises(exceptions.OperationFailed, self._parse)
+        self.assertNotIsInstance(e, exceptions.GuidMismatch)
+        self.log.error.assert_called_once()
+
+    def test_guid_mismatch_raises_without_logging(self):
+        self.assertRaises(exceptions.GuidMismatch, self._parse,
+                          error='guid_mismatch')
+        self.log.error.assert_not_called()
+
+    def test_unknown_error_code_raises_operation_failed(self):
+        e = self.assertRaises(exceptions.OperationFailed, self._parse,
+                              error='something_else')
+        self.assertNotIsInstance(e, exceptions.GuidMismatch)
+        self.log.error.assert_called_once()
+
+
+class TestEswitchUtilsPluggedVnics(base.BaseTestCase):
+
+    def setUp(self):
+        super(TestEswitchUtilsPluggedVnics, self).setUp()
+        with mock.patch.object(utils, 'zmq'):
+            self.utils = utils.EswitchUtils('inproc://eswitchd-test', 3000)
+        self.reply = None
+        mock.patch.object(self.utils, 'send_msg',
+                          side_effect=self._send_msg).start()
+        self.sent = []
+
+    def _send_msg(self, msg):
+        self.sent.append(jsonutils.loads(msg))
+        return self.utils.parse_response_msg(jsonutils.dumps(self.reply))
+
+    def test_get_plugged_vnics(self):
+        vnics = {'0000:06:00.2': {'mac': 'fa:16:3e:a6:71:17',
+                                  'pci_slot': '0000:06:00.2',
+                                  'plug_id': 'plug-id'}}
+        self.reply = {'status': 'OK', 'response': vnics,
+                      'action': 'get_plugged_vnics'}
+        self.assertEqual(vnics, self.utils.get_plugged_vnics())
+        self.assertEqual([{'action': 'get_plugged_vnics'}], self.sent)
+        self.utils.get_plugged_vnics({'plug-2', 'plug-1'})
+        self.assertEqual({'action': 'get_plugged_vnics',
+                          'skip_plug_ids': ['plug-1', 'plug-2']},
+                         self.sent[-1])
+
+    def test_get_plugged_vnics_old_eswitchd(self):
+        # What an eswitchd that doesn't know the action replies.
+        self.reply = {'status': 'FAIL', 'reason': 'unknown action',
+                      'action': 'get_plugged_vnics'}
+        with mock.patch.object(utils.LOG, 'error') as log_error:
+            self.assertRaises(exceptions.UnsupportedAction,
+                              self.utils.get_plugged_vnics)
+        log_error.assert_not_called()
+
+    def test_get_plugged_vnics_failure(self):
+        self.reply = {'status': 'FAIL', 'reason': 'Get plugged vnics failed',
+                      'action': 'get_plugged_vnics'}
+        e = self.assertRaises(exceptions.OperationFailed,
+                              self.utils.get_plugged_vnics)
+        self.assertNotIsInstance(e, exceptions.UnsupportedAction)

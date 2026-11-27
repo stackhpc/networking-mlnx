@@ -17,6 +17,7 @@
 # - configure_neutron_ml2_mlnx
 # - init_neutron_ml2_mlnx
 # - start_neutron_ml2_mlnx
+# - configure_tempest_neutron_ml2_mlnx
 # - stop_neutron_ml2_mlnx
 # - cleanup_neutron_ml2_mlnx
 
@@ -60,7 +61,6 @@ function configure_neutron_ml2_mlnx {
             iniset /$Q_PLUGIN_CONF_FILE sdn bind_normal_ports True
             iniset /$Q_PLUGIN_CONF_FILE sdn sync_enabled False
         fi
-        iniset /$Q_PLUGIN_CONF_FILE securitygroup noop
     fi
     if is_service_enabled eswitchd; then
         configure_eswitchd
@@ -78,6 +78,20 @@ function configure_neutron_ml2_mlnx {
        iniset /$Q_L3_CONF_FILE DEFAULT ipoib_physical_interface $PHYSICAL_INTERFACE
     fi
 
+}
+
+# configure_tempest_neutron_ml2_mlnx() - Set the options of
+# networking-mlnx-tempest-plugin in tempest.conf. Tempest ignores them
+# when the plugin is not installed.
+function configure_tempest_neutron_ml2_mlnx {
+    # configure_neutron_ml2_mlnx has already derived the mappings from
+    # PHYSICAL_NETWORK and PHYSICAL_INTERFACE if they were not set.
+    if [[ -z "$PHYSICAL_INTERFACE_MAPPINGS" ]]; then
+        return
+    fi
+    iniset $TEMPEST_CONFIG service_available networking_mlnx True
+    # The tests use the physical network of the first mapping.
+    iniset $TEMPEST_CONFIG networking_mlnx physical_network "${PHYSICAL_INTERFACE_MAPPINGS%%:*}"
 }
 
 # init_neutron_ml2_mlnx() - Initialize databases, etc.
@@ -100,7 +114,7 @@ function start_neutron_ml2_mlnx {
         start_eswitchd
     fi
     if is_service_enabled mlnx-agt; then
-        run_process mlnx-agt "$MLNX_AGENT_BINARY --config-file ${NEUTRON_CONF} --config-file ${NEUTRON_CORE_PLUGIN_CONF}"
+        run_process mlnx-agt "$MLNX_AGENT_BINARY --config-file ${NEUTRON_CONF} --config-file /$Q_PLUGIN_CONF_FILE"
     fi
     sleep 10
 }

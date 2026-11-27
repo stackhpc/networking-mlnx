@@ -40,7 +40,10 @@ sdn_opts = [
                    default=10
                    ),
         cfg.IntOpt('sync_timeout', default=10,
-                   help=_("Sync thread timeout in seconds.")),
+                   help=_("Interval in seconds at which "
+                          "neutron-periodic-workers sends the journal's "
+                          "rows to the SDN controller and checks the jobs "
+                          "of those it has sent.")),
         cfg.IntOpt('retry_count', default=-1,
                    help=_("Number of times to retry a row "
                           "before failing."
@@ -54,6 +57,17 @@ sdn_opts = [
                           "maintenance_interval by the cleanup thread."
                           "To disable completed rows deletion "
                           "value should be -1")),
+        cfg.IntOpt('failed_port_delete_retry_interval', default=3600,
+                   min=-1,
+                   help=_("How long a failed port deletion waits, in "
+                          "seconds, before the maintenance task sends it to "
+                          "the SDN controller again, unless that could undo "
+                          "something newer. Until the controller has done "
+                          "it, other ports with the same GUID can't be "
+                          "added to a partition key. Checked every "
+                          "maintenance_interval. -1 disables it, leaving "
+                          "failed port deletions to neutron-mlnx-manage "
+                          "journal retry.")),
         cfg.IntOpt('processing_timeout', default='100',
                    help=_("Time in seconds to wait before a "
                           "processing row is marked back to pending.")),
@@ -75,7 +89,8 @@ sdn_opts = [
                     default=[],
                     help=_("A list of InfiniBand physnets in which binding of "
                            "normal ports is allowed. This option is used in "
-                           "conjuction with bind_normal_ports. "
+                           "conjuction with bind_normal_ports, and must "
+                           "be set if bind_normal_ports is enabled. "
                            "The list must be a subset of physical_networks")),
         cfg.BoolOpt('cert_verify',
                     default="False",

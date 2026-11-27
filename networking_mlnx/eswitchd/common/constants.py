@@ -47,3 +47,8 @@ MLNX5_DEVICE_TYPE = 'MLNX5'
 SOCKET_OS_PORT = '60001'
 SOCKET_OS_TRANSPORT = 'tcp'
 SOCKET_OS_ADDR = '0.0.0.0'
+
+# Error code of a failed port_up whose VF doesn't have the expected GUID, for
+# example because Nova is detaching it. Agents use it to tell this expected
+# failure from others.
+ERROR_GUID_MISMATCH = 'guid_mismatch'

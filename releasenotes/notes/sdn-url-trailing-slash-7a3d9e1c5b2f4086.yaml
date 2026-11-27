@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    A trailing slash in the ``[sdn] url`` option is now removed. Previously
+    ``mlnx_sdn_assist`` sent requests to URLs with a double slash, such as
+    ``https://ufm/ufmRestV3//app/jobs/1``.

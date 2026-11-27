@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    When a port moves to another host, the ``mlnx_sdn_assist`` journal now
+    sends the ``DELETE`` of the port's old binding to the SDN controller
+    before the ``POST`` of its new one, even when both were recorded in the
+    same second. Previously the two could be sent in either order, and the
+    ``DELETE`` could remove the port from its partition key after the ``POST``
+    had added it.

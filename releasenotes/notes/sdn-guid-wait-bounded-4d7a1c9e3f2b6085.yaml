@@ -1,0 +1,12 @@
+---
+security:
+  - |
+    Failed deletions of ports are no longer removed from the ``sdn_journal``
+    table after ``[sdn] completed_rows_retention``, so ports with the same
+    GUID keep being set to ``ERROR`` until an operator has checked that the
+    GUID was removed from its partition key and deleted the row.
+fixes:
+  - |
+    A port's ``POST`` now only waits for deletions of ports with the same
+    GUID that were recorded no later than it, so that operations recorded
+    during a controller outage can't wait for each other forever.

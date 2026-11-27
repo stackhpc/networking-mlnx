@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    When the ``mlnx_sdn_assist`` journal fails to release a port after the SDN
+    controller's job for it has completed, for example because of a database
+    deadlock, it now tries again on its next run. Previously it marked the
+    journal row as completed first, so the port stayed ``DOWN``.

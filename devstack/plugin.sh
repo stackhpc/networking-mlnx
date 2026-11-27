@@ -21,6 +21,13 @@ elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
     # Initialize and start the template service
     ##init_template
     start_neutron_ml2_mlnx
+
+elif [[ "$1" == "stack" && "$2" == "test-config" ]]; then
+    # Configure Tempest, after DevStack has written tempest.conf
+    if is_service_enabled tempest && is_service_enabled mlnx-agt; then
+        echo_summary "Configuring Tempest for MLNX Ml2 MD"
+        configure_tempest_neutron_ml2_mlnx
+    fi
 fi
 
 if [[ "$1" == "unstack" ]]; then

@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    Ports bound by the ``mlnx_infiniband`` mechanism driver now stay ``DOWN``
+    until ``neutron-mlnx-agent`` reports that it has configured the virtual
+    function. Previously the driver never added the L2 agent provisioning
+    block when a port was bound to a host, so the port could become
+    ``ACTIVE``, and Nova could start the instance, before the agent had
+    configured the virtual function.

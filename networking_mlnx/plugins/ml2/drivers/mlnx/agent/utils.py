@@ -20,6 +20,7 @@ from oslo_serialization import jsonutils
 import six
 
 from networking_mlnx._i18n import _LE
+from networking_mlnx.eswitchd.common import constants as eswitchd_constants
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import comm_utils
 from networking_mlnx.plugins.ml2.drivers.mlnx.agent import exceptions
 
@@ -86,8 +87,14 @@ class EswitchUtils(object):
                 return msg.get('response')
             return
         elif msg['status'] == 'FAIL':
+            if msg.get('reason') == 'unknown action':
+                # An older eswitchd. The caller decides how much it matters.
+                raise exceptions.UnsupportedAction(action=msg.get('action'))
             msg_dict = dict(action=msg['action'], reason=msg['reason'])
             error_msg = _LE("Action %(action)s failed: %(reason)s") % msg_dict
+            if msg.get('error') == eswitchd_constants.ERROR_GUID_MISMATCH:
+                # The caller decides how to log this expected failure.
+                raise exceptions.GuidMismatch(err_msg=error_msg)
         else:
             error_msg = _LE("Unknown operation status %s") % msg['status']
         LOG.error(error_msg)
@@ -98,6 +105,21 @@ class EswitchUtils(object):
         msg = jsonutils.dumps({'action': 'get_vnics', 'fabric': '*'})
         vnics = self.send_msg(msg)
         return vnics
+
+    def get_plugged_vnics(self, skip_plug_ids=None):
+        """Get the VFs that Nova plugged and that still have their GUID
+
+        :param skip_plug_ids: IDs of plugs whose VF's GUID eswitchd needn't
+                              read
+        :return: dict, keyed by PCI slot, of dicts with the mac, pci_slot,
+                 plug_id and guid_checked of each VF
+        :raises: UnsupportedAction if eswitchd is too old to know them
+        """
+        LOG.debug("get_plugged_vnics")
+        msg = {'action': 'get_plugged_vnics'}
+        if skip_plug_ids:
+            msg['skip_plug_ids'] = sorted(skip_plug_ids)
+        return self.send_msg(jsonutils.dumps(msg))
 
     def set_port_vlan_id(self, physical_network,
                          segmentation_id, pci_slot):
@@ -122,13 +144,17 @@ class EswitchUtils(object):
                                    'interface': phy_interface})
             self.send_msg(msg)
 
-    def port_up(self, fabric, pci_slot):
+    def port_up(self, fabric, pci_slot, mac=None):
         LOG.debug("Port Up for %(pci_slot)s on fabric %(fabric)s",
                   {'pci_slot': pci_slot, 'fabric': fabric})
-        msg = jsonutils.dumps({'action': 'port_up',
-                               'fabric': fabric,
-                               'ref_by': 'pci_slot',
-                               'pci_slot': pci_slot})
+        msg = {'action': 'port_up',
+               'fabric': fabric,
+               'ref_by': 'pci_slot',
+               'pci_slot': pci_slot}
+        if mac:
+            # eswitchd only enables the link if the VF has this mac's GUID.
+            msg['mac'] = mac
+        msg = jsonutils.dumps(msg)
         self.send_msg(msg)
 
     def port_down(self, fabric, pci_slot):

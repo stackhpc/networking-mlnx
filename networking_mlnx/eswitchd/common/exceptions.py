@@ -36,3 +36,10 @@ class InvalidGUIDFormatException(MlxException):
 
     def __str__(self):
         return 'Invalid GUID format: %s' % self.message
+
+
+class GuidMismatchException(MlxException):
+    """A VF doesn't have the GUID derived from the expected mac address"""
+
+    def __str__(self):
+        return str(self.message)

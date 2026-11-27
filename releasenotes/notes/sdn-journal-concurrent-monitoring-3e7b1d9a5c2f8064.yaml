@@ -1,0 +1,12 @@
+---
+fixes:
+  - |
+    Every Neutron process that runs the ``mlnx_sdn_assist`` journal checks
+    the SDN controller jobs that the journal is waiting for. A process that
+    checked a job after another had already completed, retried or failed its
+    journal row could change the row again. It could then send a request to
+    the SDN controller again, count a retry twice, or fail a request, and
+    set its port to ``ERROR``, while another process was sending it again. A
+    process now locks the row and leaves it alone if another process has
+    changed it since it was read, so the result of each job is acted on
+    once.

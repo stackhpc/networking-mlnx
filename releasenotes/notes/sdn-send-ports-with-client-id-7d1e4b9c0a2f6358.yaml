@@ -1,0 +1,27 @@
+---
+upgrade:
+  - |
+    ``mlnx_sdn_assist`` now only sends the SDN controller ports that have a
+    DHCP client ID, by which UFM identifies an InfiniBand port, once they
+    are bound to a network that it syncs. Other ports, such as Ethernet
+    ports and networks' DHCP and router ports, are no longer sent, and if
+    earlier releases sent any of them, they aren't deleted from the
+    controller either.
+  - |
+    The DHCP client ID of a port bound to a network that ``mlnx_sdn_assist``
+    syncs can no longer be changed, added or removed; unbind the port
+    first. Previously the port stayed up while the controller moved it. This
+    includes Ironic changing the ``client-id`` of an active node's port,
+    which now fails.
+fixes:
+  - |
+    A request that would bind a ``direct`` port (VIF type ``ib_hostdev``) on
+    a VLAN network that ``mlnx_sdn_assist`` syncs now fails if the port has
+    no DHCP client ID, since the controller can't add it to its partition
+    key, and the port stays unbound. Previously the controller rejected the
+    port and set it to ``ERROR``.
+  - |
+    ``mlnx_sdn_assist`` no longer asks the controller to delete or update
+    ports that it never sent, such as a port whose binding failed, and now
+    deletes the old port when a port update makes ML2 bind it again on the
+    same host.

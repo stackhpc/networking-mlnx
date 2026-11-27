@@ -1,0 +1,15 @@
+---
+features:
+  - |
+    A new command, ``neutron-mlnx-manage``, manages networking-mlnx's state
+    in Neutron's database. Run it with ``neutron-server``'s configuration
+    files. Its ``journal`` commands show and recover the rows of the
+    ``mlnx_sdn_assist`` journal. ``journal list`` and ``journal show`` print
+    a table, or JSON, YAML or values with ``-f``, as the ``openstack`` client
+    does. A failed port deletion is kept until it is dealt with, and keeps
+    other ports with the same GUID out of partition keys meanwhile:
+    ``journal show`` lists them, ``journal retry`` sends the deletion to the
+    SDN controller again, so that the controller confirms it, and
+    ``journal delete`` deletes one or more rows once an operator has checked
+    the controller. Previously the rows had to be deleted from the database
+    by hand. See the partition keys documentation.

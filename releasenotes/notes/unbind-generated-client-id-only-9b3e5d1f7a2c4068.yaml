@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    When a port is unbound, the ``mlnx_infiniband`` mechanism driver now
+    removes the ``client-id`` DHCP option only if it has the value the
+    driver generates, so a ``client-id`` set by the user is kept. Ports
+    that were wrongly given the driver's ``client-id`` have it removed when
+    they are next unbound.

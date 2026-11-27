@@ -1,0 +1,19 @@
+---
+security:
+  - |
+    A bare metal node's InfiniBand port (VNIC type ``baremetal`` with a DHCP
+    client ID) on a VLAN network now stays ``DOWN`` until the SDN
+    controller's job that adds it to the network's partition key has
+    completed, and is set to ``ERROR`` if the controller fails. Previously
+    ``mlnx_sdn_assist`` made the port ``ACTIVE`` as soon as it was bound.
+    Ironic waits for its ports to be ``ACTIVE`` before it powers a node on
+    into the tenant network, when ``[neutron] fail_on_port_binding_failure``
+    is ``True``, its default, so the deployment now fails instead. A port in
+    ``ERROR`` fails the deployment when Ironic's wait times out, which is
+    set by ``[agent] neutron_agent_max_attempts`` and
+    ``[agent] neutron_agent_status_retry_interval``.
+upgrade:
+  - |
+    The ``mlnx_sdn_assist`` mechanism driver now sends a bare metal node's
+    InfiniBand port to the SDN controller when its binding is committed,
+    rather than when its host is set.

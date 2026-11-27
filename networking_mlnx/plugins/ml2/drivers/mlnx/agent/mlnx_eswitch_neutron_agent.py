@@ -16,6 +16,7 @@
 
 import socket
 import sys
+import threading
 import time
 
 from neutron.agent import rpc as agent_rpc
@@ -40,6 +41,55 @@ from networking_mlnx.plugins.ml2.drivers.mlnx import mech_mlnx
 
 LOG = logging.getLogger(__name__)
 
+# How long to wait before asking an eswitchd that doesn't know
+# get_plugged_vnics again, in case it was upgraded and restarted since. The
+# agent also asks again as soon as a request to eswitchd fails, which a
+# restart of eswitchd causes.
+PLUGGED_VNICS_RETRY_INTERVAL = 60
+# How long to look for the port that Nova is live migrating to this host for
+# a VF it plugged, before giving up on the plug. Nova sets migrating_to in
+# the same pre_live_migration RPC as it plugs the VF, so the port matches
+# within seconds or never, for example when the VF was plugged for another
+# reason.
+PLUGGED_VNIC_MATCH_WINDOW = 600
+
+# The ways a VF plugged by Nova can match a port, see _match_plug().
+PLUG_FOR_PORT_BOUND_HERE = 'bound-here'
+PLUG_FOR_MIGRATING_PORT = 'migrating'
+
+
+class PortsUnavailable(Exception):
+    """The ports bound to this host couldn't be fetched in this iteration"""
+
+
+class PortsOnHost(object):
+    """The direct ports with a binding on this host, fetched at most once
+
+    The ports are only fetched when needed, and only once for each
+    iteration of the agent's loop, by the first call to get(). If that
+    fails, it raises the error, and later calls raise PortsUnavailable, so
+    that the error is only logged once.
+    """
+
+    def __init__(self, agent):
+        self.agent = agent
+        self._ports = None
+        self._error = None
+
+    def get(self):
+        if self._error is not None:
+            raise PortsUnavailable(str(self._error))
+        if self._ports is None:
+            try:
+                self._ports = (
+                    self.agent.plugin_rpc.get_ports_by_vnic_type_and_host(
+                        self.agent.context, portbindings.VNIC_DIRECT,
+                        self.agent.conf.host))
+            except Exception as e:
+                self._error = e
+                raise
+        return self._ports
+
 
 class EswitchManager(object):
     def __init__(self, interface_mappings, endpoint, timeout):
@@ -48,11 +98,18 @@ class EswitchManager(object):
         self.network_map = {}
         self.utils.define_fabric_mappings(interface_mappings)
 
-    def get_port_id_by_pci(self, pci_slot):
+    def find_port_id_by_pci(self, pci_slot):
+        """Return the ID of the port configured on a VF, or None"""
         for network_id, data in six.iteritems(self.network_map):
             for port in data['ports']:
                 if port['pci_slot'] == pci_slot:
                     return port['port_id']
+        return None
+
+    def get_port_id_by_pci(self, pci_slot):
+        port_id = self.find_port_id_by_pci(pci_slot)
+        if port_id is not None:
+            return port_id
         LOG.error("Agent cache inconsistency - port id "
                   "is not stored for %s", pci_slot)
         raise exceptions.MlnxException(err_msg=("Agent cache inconsistency, "
@@ -67,6 +124,17 @@ class EswitchManager(object):
         for vnic in six.itervalues(self.utils.get_attached_vnics()):
             vnics.add((vnic['mac'], vnic['pci_slot']))
         return vnics
+
+    def get_plugged_vnics(self, skip_plug_ids=None):
+        """Get the VFs that Nova plugged and that still have their GUID
+
+        :param skip_plug_ids: IDs of plugs whose VF's GUID eswitchd needn't
+                              read
+        :return: dict, keyed by PCI slot, of dicts with the mac, pci_slot,
+                 plug_id and guid_checked of each VF, assigned to an
+                 instance or not
+        """
+        return self.utils.get_plugged_vnics(skip_plug_ids)
 
     def vnic_port_exists(self, pci_slot):
         return pci_slot in [
@@ -93,12 +161,14 @@ class EswitchManager(object):
 
     def port_up(self, network_id, network_type,
                 physical_network, seg_id, port_id, port_mac, pci_slot):
-        """Sets port to up.
+        """Configures the port.
 
         Update internal network map with port data.
         - Check if vnic defined
         - configure eswitch vport
-        - set port to Up
+
+        This doesn't enable the VF's link, see
+        MlnxEswitchNeutronAgent._sync_link_states().
         """
         LOG.debug("Connecting port %s", port_id)
 
@@ -106,6 +176,12 @@ class EswitchManager(object):
             self.provision_network(port_id, port_mac,
                                    network_id, network_type,
                                    physical_network, seg_id)
+        # Forget earlier entries for the port or the VF, so that the map
+        # only has the current ones.
+        for data in six.itervalues(self.network_map):
+            data['ports'] = [port for port in data['ports']
+                             if port['port_id'] != port_id and
+                             port['pci_slot'] != pci_slot]
         net_map = self.network_map[network_id]
         net_map['ports'].append({'port_id': port_id, 'port_mac': port_mac,
                                  'pci_slot': pci_slot})
@@ -123,7 +199,24 @@ class EswitchManager(object):
                                     seg_id,
                                     pci_slot)
 
-        self.utils.port_up(physical_network, pci_slot)
+    def set_link(self, pci_slot, mac=None):
+        """Enable the VF's link if mac is set, otherwise disable it
+
+        eswitchd only enables the link if the VF has the GUID of mac.
+        """
+        # eswitchd requires a fabric but doesn't use it.
+        if mac:
+            self.utils.port_up('*', pci_slot, mac)
+        else:
+            self.utils.port_down('*', pci_slot)
+
+    def get_port_by_id(self, port_id):
+        """Return (mac, pci_slot) of a port this agent has configured"""
+        for data in six.itervalues(self.network_map):
+            for port in data['ports']:
+                if port['port_id'] == port_id:
+                    return port['port_mac'], port['pci_slot']
+        return None
 
     def port_release(self, pci_slot):
         """Clear port configuration from eSwitch."""
@@ -155,7 +248,8 @@ class MlnxEswitchRpcCallbacks(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
     #   1.2 Support DVR (Distributed Virtual Router) RPC (not supported)
     #   1.3 Added param devices_to_update to security_groups_provider_updated
     #       (works with NoopFirewallDriver)
-    target = oslo_messaging.Target(version='1.3')
+    #   1.5 Support binding_activate and binding_deactivate
+    target = oslo_messaging.Target(version='1.5')
 
     def __init__(self, context, agent, sg_agent):
         super(MlnxEswitchRpcCallbacks, self).__init__()
@@ -190,6 +284,41 @@ class MlnxEswitchRpcCallbacks(sg_rpc.SecurityGroupAgentRpcCallbackMixin):
                       "with MAC %(mac)s. skipping",
                       {'id': port['id'], 'mac': mac, 'pci_slot': pci_slot})
 
+    def binding_activate(self, context, **kwargs):
+        if kwargs.get('host') != self.agent.conf.host:
+            return
+        # Nova activates the binding of a live migrated instance on this
+        # host. ML2 now waits for this agent to report the port up again.
+        port_id = kwargs.get('port_id')
+        port = self.eswitch.get_port_by_id(port_id)
+        if port:
+            # The VF may have changed since the port was configured here.
+            mac = port[0]
+            port = next((vnic for vnic in self.eswitch.get_vnics()
+                         if vnic[0].lower() == mac.lower()), None)
+        if port:
+            self.agent.add_port_update(port)
+            LOG.debug("binding_activate RPC received for port %s", port_id)
+            return
+        # The port's VF may already be attached, but Neutron told the agent
+        # that the port had no active binding on this host. The VF won't be
+        # added again, so look at such VFs again. The RPC doesn't say which
+        # one is the port's, but the server only configures those whose
+        # binding is now active.
+        devices = self.agent.get_inactive_binding_devices()
+        for device in devices:
+            self.agent.add_port_update(device)
+        LOG.debug("binding_activate RPC received for port %(port)s, which "
+                  "is not configured on this agent yet. Looking again at "
+                  "VFs without an active binding: %(devices)s",
+                  {'port': port_id, 'devices': devices})
+
+    def binding_deactivate(self, context, **kwargs):
+        # The port's link is disabled when the port is no longer bound to
+        # this host, see MlnxEswitchNeutronAgent._sync_link_states().
+        LOG.debug("binding_deactivate RPC received for port %s",
+                  kwargs.get('port_id'))
+
 
 class MlnxEswitchNeutronAgent(object):
 
@@ -207,9 +336,35 @@ class MlnxEswitchNeutronAgent(object):
             'start_flag': True}
         # Stores port update notifications for processing in main rpc loop
         self.updated_ports = set()
+        # The RPC callbacks run in their own threads, so guard the hand-over
+        # of updated_ports to the main loop.
+        self._updated_ports_lock = threading.Lock()
         # A pci to mac dict used to cache port_update information from
         # neutron server.
         self.port_pci_to_mac_cache = dict()
+        # The link state set for each VF, by PCI slot, as a (mac, enabled)
+        # pair. The mac is part of it because eswitchd disables the link
+        # when the VF gets another port's GUID.
+        self.link_states = {}
+        # The attached VFs, as (mac, pci_slot) pairs, whose port is bound to
+        # another host, while it is live migrated to this host. They are
+        # configured once Nova activates the port's binding on this host.
+        # Guarded by _updated_ports_lock, since binding_activate reads it.
+        self.inactive_binding_devices = set()
+        # The plug IDs, by PCI slot, of the VFs plugged by Nova that need
+        # nothing more from the agent: either it told Neutron that the VF is
+        # ready for the port being live migrated to this host, or the port
+        # is bound to this host, so it goes through the usual path once the
+        # VF is attached.
+        self.handled_plugs = {}
+        # The plug ID and the time when the agent first found that it matched
+        # no port, by PCI slot, see _plug_unmatched().
+        self._unmatched_plugs = {}
+        # When to ask eswitchd for the plugged VFs again, if it is too old
+        # to know them. None if it knows them, or hasn't been asked yet.
+        self._plugged_vnics_retry_at = None
+        # Whether eswitchd was last found not to know get_plugged_vnics.
+        self._plugged_vnics_unsupported = False
         self.context = context.get_admin_context_without_session()
         self.plugin_rpc = agent_rpc.PluginApi(topics.PLUGIN)
         self.sg_plugin_rpc = sg_rpc.SecurityGroupServerRpcApi(topics.PLUGIN)
@@ -245,7 +400,9 @@ class MlnxEswitchNeutronAgent(object):
         # Define the listening consumers for the agent
         consumers = [[topics.PORT, topics.UPDATE],
                      [topics.NETWORK, topics.DELETE],
-                     [topics.SECURITY_GROUP, topics.UPDATE]]
+                     [topics.SECURITY_GROUP, topics.UPDATE],
+                     [topics.PORT_BINDING, topics.DEACTIVATE],
+                     [topics.PORT_BINDING, topics.ACTIVATE]]
         self.connection = agent_rpc.create_consumers(self.endpoints,
                                                      self.topic,
                                                      consumers)
@@ -256,11 +413,23 @@ class MlnxEswitchNeutronAgent(object):
                 self._report_state)
             heartbeat.start(interval=report_interval)
 
+    def get_inactive_binding_devices(self):
+        with self._updated_ports_lock:
+            return set(self.inactive_binding_devices)
+
+    def _set_inactive_binding(self, device, inactive):
+        with self._updated_ports_lock:
+            if inactive:
+                self.inactive_binding_devices.add(device)
+            else:
+                self.inactive_binding_devices.discard(device)
+
     def add_port_update(self, port):
-        self.updated_ports.add(port)
         # hack to deal with the fact that eswitchd returns invalid macs
         port_mac, port_pci = port
         self.port_pci_to_mac_cache[port_pci] = port_mac
+        with self._updated_ports_lock:
+            self.updated_ports.add(port)
 
     def fix_eswitchd_vnic_macs(self, eswitchd_ports, neutron_updated_ports):
         # NOTE(adrianc): eswitchd service may return ports with invalid
@@ -292,14 +461,20 @@ class MlnxEswitchNeutronAgent(object):
         return fixed_ports
 
     def scan_ports(self, previous, sync):
-        # NOTE(adrianc): Save self.updated_ports and clear it for next
-        # iteration. This is threadsafe as greenthreads should not yield
-        # between the two operations. We should really consider relying
-        # less on greenthread black magic.
-        updated_ports = self.updated_ports
-        self.updated_ports = set()
-        cur_ports = self.fix_eswitchd_vnic_macs(self.eswitch.get_vnics(),
-                                                self.port_pci_to_mac_cache)
+        # Save self.updated_ports and clear it for the next iteration. Hold
+        # the lock so that a concurrent add_port_update() cannot add to the
+        # old set after it has been read.
+        with self._updated_ports_lock:
+            updated_ports = self.updated_ports
+            self.updated_ports = set()
+        try:
+            cur_ports = self.fix_eswitchd_vnic_macs(
+                self.eswitch.get_vnics(), self.port_pci_to_mac_cache)
+        except Exception:
+            # Keep the updates for the next iteration.
+            with self._updated_ports_lock:
+                self.updated_ports |= updated_ports
+            raise
         port_info = {'current': cur_ports}
         if sync:
             # Either it's the first iteration or previous iteration had
@@ -321,11 +496,13 @@ class MlnxEswitchNeutronAgent(object):
         resync_b = False
         device_added_updated = port_info['added'] | port_info['updated']
 
+        # Release removed devices first, since a VF that Nova gave to
+        # another port is removed and added in the same iteration.
+        if port_info['removed']:
+            resync_b = self.treat_devices_removed(port_info['removed'])
         if device_added_updated:
             resync_a = self.treat_devices_added_or_updated(
                 device_added_updated)
-        if port_info['removed']:
-            resync_b = self.treat_devices_removed(port_info['removed'])
         # If one of the above opertaions fails => resync with plugin
         return (resync_a | resync_b)
 
@@ -363,36 +540,68 @@ class MlnxEswitchNeutronAgent(object):
             # resync is needed
             return True
 
+        # Set the links of these devices again, once they are configured.
+        for _mac, pci_slot in devices:
+            self.link_states.pop(pci_slot, None)
+
+        pci_slots = dict(devices)
+        resync = False
         for dev_details in devs_details_list:
             device = dev_details['device']
             LOG.info("Adding or updating port with mac %s", device)
+            pair = (device, pci_slots.get(device))
+            no_active_binding = bool(
+                dev_details.get(constants.NO_ACTIVE_BINDING))
+            self._set_inactive_binding(pair, no_active_binding)
 
             if 'port_id' in dev_details:
                 LOG.info("Port %s updated", device)
                 LOG.debug("Device details %s", str(dev_details))
-                self.treat_vif_port(dev_details['port_id'],
-                                    dev_details['device'],
-                                    dev_details['profile']['pci_slot'],
-                                    dev_details['network_id'],
-                                    dev_details['network_type'],
-                                    dev_details['physical_network'],
-                                    dev_details['segmentation_id'],
-                                    dev_details['admin_state_up'])
+                try:
+                    self.treat_vif_port(dev_details['port_id'],
+                                        dev_details['device'],
+                                        dev_details['profile']['pci_slot'],
+                                        dev_details['network_id'],
+                                        dev_details['network_type'],
+                                        dev_details['physical_network'],
+                                        dev_details['segmentation_id'],
+                                        dev_details['admin_state_up'])
+                except Exception:
+                    # Don't report the port up, so that it can't become
+                    # ACTIVE, and try again on the next iteration.
+                    LOG.exception("Failed to configure port %s", device)
+                    resync = True
+                    continue
                 LOG.debug("Setting status for %s to UP", device)
                 self.plugin_rpc.update_device_up(
                     self.context, device, self.agent_id, self.conf.host)
+            elif no_active_binding:
+                # The port is live migrated to this host, and still bound to
+                # the source host. Leave the VF alone: it is configured once
+                # Nova activates the binding on this host, see
+                # MlnxEswitchRpcCallbacks.binding_activate().
+                LOG.info("Device with mac_address %s has no active binding "
+                         "on this host", device)
             else:
                 LOG.debug("Setting status for %s to DOWN", device)
                 self.plugin_rpc.update_device_down(
                     self.context, device, self.agent_id, self.conf.host)
                 LOG.error("Device with mac_address %s not defined "
                           "on Neutron Plugin", device)
-        return False
+        return resync
 
     def treat_devices_removed(self, devices):
         resync = False
         for mac, pci_slot in devices:
             LOG.info("Removing device with mac_address %s", mac)
+            if (mac, pci_slot) in self.get_inactive_binding_devices():
+                self._set_inactive_binding((mac, pci_slot), False)
+                if self.eswitch.find_port_id_by_pci(pci_slot) is None:
+                    # Its port was bound to another host, so the agent
+                    # didn't configure the VF and has nothing to report.
+                    LOG.info("Device with mac_address %s had no active "
+                             "binding on this host", mac)
+                    continue
             try:
                 port_id = self.eswitch.get_port_id_by_pci(pci_slot)
                 dev_details = self.plugin_rpc.update_device_down(self.context,
@@ -411,6 +620,307 @@ class MlnxEswitchNeutronAgent(object):
                 LOG.debug("Device %s not defined on plugin", (mac, pci_slot))
             self.eswitch.port_release(pci_slot)
         return resync
+
+    def _sync_link_states(self, ports_on_host=None):
+        """Enable a VF's link only while its port may use the network
+
+        ML2 makes a port ACTIVE only when nothing holds it any more, which
+        includes the SDN controller adding it to its partition key. A VF's
+        link is enabled only while its port is ACTIVE, administratively up
+        and bound to this host, and only if the VF has the port's GUID. So
+        the VF can't reach the fabric outside its partition, whatever Nova
+        does with the instance, for example when it attaches an interface
+        or migrates an instance without waiting for the port.
+
+        :param ports_on_host: PortsOnHost to get the ports from
+        """
+        if ports_on_host is None:
+            ports_on_host = PortsOnHost(self)
+        # The mac is derived from the VF's GUID, so a VF that has another
+        # port's GUID, or an invalid one, matches no port.
+        vnics = self.eswitch.get_vnics()
+        current_slots = {pci_slot for _mac, pci_slot in vnics}
+        for pci_slot in set(self.link_states) - current_slots:
+            # The VF is no longer assigned. eswitchd disables its link when
+            # Nova unplugs it, but Nova ignores failures.
+            try:
+                self.eswitch.set_link(pci_slot)
+            except Exception:
+                LOG.exception("Failed to disable the link of VF %s",
+                              pci_slot)
+                continue
+            del self.link_states[pci_slot]
+        if not vnics:
+            return
+        try:
+            ports = ports_on_host.get()
+        except PortsUnavailable as e:
+            # Only links that this agent enabled for the same port stay up.
+            LOG.warning("Failed to get the ports bound to this host: %s", e)
+            ports = None
+        except Exception:
+            LOG.exception("Failed to get the ports bound to this host")
+            ports = None
+        ready = set()
+        for port in ports or ():
+            profile = port.get(portbindings.PROFILE) or {}
+            if (port['status'] == constants.PORT_STATUS_ACTIVE and
+                    port['admin_state_up'] and
+                    port.get(portbindings.HOST_ID) == self.conf.host):
+                ready.add((port['mac_address'].lower(),
+                           profile.get('pci_slot')))
+        for mac, pci_slot in vnics:
+            if ports is None:
+                up = self.link_states.get(pci_slot) == (mac, True)
+            else:
+                up = (mac.lower(), pci_slot) in ready
+            # Set the link every time, since Nova may have plugged the VF
+            # again, which disables it, without the agent noticing.
+            try:
+                self.eswitch.set_link(pci_slot, mac if up else None)
+            except exceptions.GuidMismatch as e:
+                # eswitchd refused, since the VF no longer has the port's
+                # GUID: usually Nova has just released it from the instance
+                # and hasn't unplugged it yet. Its link may still be enabled
+                # by an earlier iteration, so disable it. If that fails, the
+                # VF stays in link_states as down, so that the cleanup above
+                # disables it if it is gone by the next iteration.
+                LOG.warning("Disabling the link of VF %(pci)s, which no "
+                            "longer has the GUID of mac %(mac)s: %(err)s",
+                            {'pci': pci_slot, 'mac': mac, 'err': e})
+                self.link_states[pci_slot] = (mac, False)
+                try:
+                    self.eswitch.set_link(pci_slot)
+                except Exception:
+                    LOG.exception("Failed to disable the link of VF %s",
+                                  pci_slot)
+                continue
+            except Exception:
+                LOG.exception("Failed to %(action)s the link of VF %(pci)s",
+                              {'action': 'enable' if up else 'disable',
+                               'pci': pci_slot})
+                self.link_states.pop(pci_slot, None)
+                continue
+            if self.link_states.get(pci_slot) != (mac, up):
+                LOG.info("%(action)s the link of VF %(pci)s with mac %(mac)s",
+                         {'action': 'Enabled' if up else 'Disabled',
+                          'pci': pci_slot, 'mac': mac})
+            self.link_states[pci_slot] = (mac, up)
+
+    def _recheck_inactive_bindings(self, ports_on_host=None):
+        """Look again at VFs whose port's binding has become active here
+
+        binding_activate does this as soon as Nova activates the binding,
+        but it misses a VF whose details the agent got just before then.
+        """
+        devices = self.get_inactive_binding_devices()
+        if not devices:
+            return
+        if ports_on_host is None:
+            ports_on_host = PortsOnHost(self)
+        bound_here = {
+            (port['mac_address'].lower(),
+             (port.get(portbindings.PROFILE) or {}).get('pci_slot'))
+            for port in ports_on_host.get()
+            if port.get(portbindings.HOST_ID) == self.conf.host}
+        for device in devices:
+            if (device[0].lower(), device[1]) in bound_here:
+                LOG.info("The port of device %s is now bound to this host",
+                         device[0])
+                self.add_port_update(device)
+
+    def _get_plugged_vnics(self):
+        """Get the VFs plugged by Nova from eswitchd
+
+        :return: dict of the VFs by PCI slot, or None if eswitchd is too old
+        """
+        if (self._plugged_vnics_retry_at is not None and
+                time.monotonic() < self._plugged_vnics_retry_at):
+            return None
+        try:
+            # eswitchd needn't read the GUIDs of the VFs whose plugs the
+            # agent has handled, such as those of running instances.
+            plugged = self.eswitch.get_plugged_vnics(
+                list(self.handled_plugs.values()))
+        except exceptions.UnsupportedAction:
+            if not self._plugged_vnics_unsupported:
+                LOG.warning("eSwitchD doesn't support get_plugged_vnics, so "
+                            "the agent can't tell Neutron when the VF of a "
+                            "port live migrated to this host is ready, and "
+                            "Nova times out waiting for it unless [compute] "
+                            "live_migration_wait_for_vif_plug is False. "
+                            "Upgrade and restart eSwitchD.")
+                self._plugged_vnics_unsupported = True
+            self._plugged_vnics_retry_at = (
+                time.monotonic() + PLUGGED_VNICS_RETRY_INTERVAL)
+            return None
+        if self._plugged_vnics_unsupported:
+            LOG.info("eSwitchD now supports get_plugged_vnics")
+            self._plugged_vnics_unsupported = False
+        self._plugged_vnics_retry_at = None
+        return plugged or {}
+
+    def _match_plug(self, vnic, ports):
+        """Find the port that a VF plugged by Nova is for
+
+        :param vnic: the VF, as returned by eswitchd
+        :param ports: the direct ports with a binding on this host
+        :return: (PLUG_FOR_MIGRATING_PORT, port) for the only port with the
+                 VF's mac address that is bound to another host and that
+                 Nova is live migrating to this host, otherwise
+                 (PLUG_FOR_PORT_BOUND_HERE, None) if a port with the mac
+                 address is bound to this host with the VF, otherwise
+                 (None, None)
+        """
+        host = self.conf.host
+        mac = vnic['mac'].lower()
+        candidates = [port for port in ports
+                      if port['mac_address'].lower() == mac]
+        # The port's binding on this host is inactive, since the active one
+        # is on another host. mlnx_infiniband doesn't bind a port, actively
+        # or not, while another port with the same mac address has an
+        # ib_hostdev binding, so another port with the mac address can only
+        # be one bound by another mechanism driver. If such a port is bound
+        # here, a plug of its VF while the port with its mac address is
+        # migrating here would be taken as the migrating port's.
+        migrating = [
+            port for port in candidates
+            if port.get(portbindings.HOST_ID) and
+            port.get(portbindings.HOST_ID) != host and
+            (port.get(portbindings.PROFILE) or {}).get(
+                'migrating_to') == host]
+        if len(migrating) == 1:
+            return PLUG_FOR_MIGRATING_PORT, migrating[0]
+        if len(migrating) > 1:
+            LOG.warning("Several ports with mac %(mac)s are being live "
+                        "migrated to this host: %(ports)s. Not reporting "
+                        "the VF %(pci)s plugged for one of them.",
+                        {'mac': mac, 'pci': vnic['pci_slot'],
+                         'ports': [port['id'] for port in migrating]})
+        # Only a port bound here with this VF is the one the VF was plugged
+        # for: a port of another mechanism driver with the same mac address
+        # can be bound here too, before Nova sets migrating_to on the
+        # migrating port.
+        if any(port.get(portbindings.HOST_ID) == host and
+               (port.get(portbindings.PROFILE) or {}).get('pci_slot') ==
+               vnic['pci_slot']
+               for port in candidates):
+            return PLUG_FOR_PORT_BOUND_HERE, None
+        LOG.debug("No single port being live migrated to this host for the "
+                  "VF %(pci)s plugged with mac %(mac)s: %(ports)s",
+                  {'pci': vnic['pci_slot'], 'mac': mac,
+                   'ports': [port['id'] for port in candidates]})
+        return None, None
+
+    def _plug_handled(self, vnic):
+        """Look no more at a VF plugged by Nova, until it is plugged again"""
+        self.handled_plugs[vnic['pci_slot']] = vnic['plug_id']
+        self._unmatched_plugs.pop(vnic['pci_slot'], None)
+
+    def _plug_unmatched(self, vnic, now):
+        """Give up on a VF plugged by Nova that matched no port for long"""
+        pci_slot = vnic['pci_slot']
+        plug_id, since = self._unmatched_plugs.get(pci_slot, (None, None))
+        if plug_id != vnic['plug_id']:
+            self._unmatched_plugs[pci_slot] = (vnic['plug_id'], now)
+            return
+        if now - since < PLUGGED_VNIC_MATCH_WINDOW:
+            return
+        LOG.info("No port live migrated to this host matched the VF %(pci)s "
+                 "plugged with mac %(mac)s for %(window)s seconds, so it is "
+                 "no longer looked at",
+                 {'pci': pci_slot, 'mac': vnic['mac'],
+                  'window': PLUGGED_VNIC_MATCH_WINDOW})
+        self._plug_handled(vnic)
+
+    def _notify_plugged_vnics(self, ports_on_host=None):
+        """Tell Neutron when a live migrated port's VF is ready here
+
+        Before it copies an instance's memory, Nova waits for the
+        network-vif-plugged event of each of its ports, which Neutron sends
+        when an agent on a host that the port isn't bound to reports the
+        port up. Nova plugs the VF on the destination host before then, but
+        doesn't attach it to the instance, so the VF isn't listed by
+        get_vnics. So report the port up once for each plug of a VF that
+        still has the GUID of a port that is bound to another host, and that
+        Nova is live migrating to this host.
+
+        This doesn't configure the VF or enable its link, and doesn't change
+        the port's status or complete its provisioning, see
+        _sync_link_states().
+
+        :param ports_on_host: PortsOnHost to get the ports from
+        """
+        if ports_on_host is None:
+            ports_on_host = PortsOnHost(self)
+        plugged = self._get_plugged_vnics()
+        if plugged is None:
+            return
+        # Forget the plugs that are gone: Nova unplugged or plugged the VF
+        # again, or its GUID changed. A VF whose GUID eswitchd couldn't read
+        # is still listed, so its plug is kept.
+        for pci_slot, plug_id in list(self.handled_plugs.items()):
+            vnic = plugged.get(pci_slot)
+            if not vnic or vnic['plug_id'] != plug_id:
+                del self.handled_plugs[pci_slot]
+        for pci_slot, (plug_id, _since) in list(
+                self._unmatched_plugs.items()):
+            vnic = plugged.get(pci_slot)
+            if not vnic or vnic['plug_id'] != plug_id:
+                del self._unmatched_plugs[pci_slot]
+        # Only report VFs that eswitchd found to still have the GUID.
+        pending = [vnic for pci_slot, vnic in six.iteritems(plugged)
+                   if self.handled_plugs.get(pci_slot) != vnic['plug_id'] and
+                   vnic.get('guid_checked', False)]
+        if not pending:
+            return
+        now = time.monotonic()
+        ready = []
+        for vnic in pending:
+            match, _port = self._match_plug(vnic, ports_on_host.get())
+            if match == PLUG_FOR_PORT_BOUND_HERE:
+                # The usual path configures the port and reports it up when
+                # the VF is attached.
+                self._plug_handled(vnic)
+            elif match == PLUG_FOR_MIGRATING_PORT:
+                ready.append(vnic)
+            else:
+                self._plug_unmatched(vnic, now)
+        if not ready:
+            return
+        # Look at the ports again just before reporting them, rather than
+        # at those fetched earlier in this iteration: if Nova has activated
+        # the port's binding on this host since, the server would take the
+        # report as the agent's, and complete the port's provisioning before
+        # the agent configured the VF. Nova can still activate the binding
+        # between this and the report, since the server has no RPC that
+        # only sends the event, but that is a much shorter time, and Nova
+        # only does it after it has copied the guest, which it does after
+        # it gets the event.
+        host = self.conf.host
+        ports = self.plugin_rpc.get_ports_by_vnic_type_and_host(
+            self.context, portbindings.VNIC_DIRECT, host)
+        for vnic in ready:
+            match, port = self._match_plug(vnic, ports)
+            if match == PLUG_FOR_PORT_BOUND_HERE:
+                self._plug_handled(vnic)
+                continue
+            if match != PLUG_FOR_MIGRATING_PORT:
+                continue
+            try:
+                # The port's ID rather than its mac address, which is only
+                # unique in its network.
+                self.plugin_rpc.update_device_up(
+                    self.context, port['id'], self.agent_id, host)
+            except Exception:
+                LOG.exception("Failed to report that the VF %(pci)s of port "
+                              "%(port)s is plugged",
+                              {'pci': vnic['pci_slot'], 'port': port['id']})
+                continue
+            LOG.info("Reported that the VF %(pci)s of port %(port)s, live "
+                     "migrated to this host, is plugged",
+                     {'pci': vnic['pci_slot'], 'port': port['id']})
+            self._plug_handled(vnic)
 
     def _port_info_has_changes(self, port_info):
         return (port_info['added'] or
@@ -432,6 +942,16 @@ class MlnxEswitchNeutronAgent(object):
                 LOG.exception("Request timeout in agent event loop "
                               "eSwitchD is not responding - exiting...")
                 sync = True
+                # eswitchd may be restarting, possibly upgraded.
+                self._plugged_vnics_retry_at = None
+                continue
+            except Exception:
+                # Don't let the loop die while the agent still reports
+                # itself alive. Try again after the polling interval.
+                LOG.exception("Failed to get the VFs from eSwitchD")
+                sync = True
+                self._plugged_vnics_retry_at = None
+                time.sleep(self._polling_interval)
                 continue
             if sync:
                 LOG.info("Agent out of sync with plugin!")
@@ -443,6 +963,28 @@ class MlnxEswitchNeutronAgent(object):
                 except Exception:
                     LOG.exception("Error in agent event loop")
                     sync = True
+            # Get the ports bound to this host at most once.
+            ports_on_host = PortsOnHost(self)
+            try:
+                self._sync_link_states(ports_on_host)
+            except Exception:
+                LOG.exception("Failed to set the links of VFs")
+            try:
+                self._recheck_inactive_bindings(ports_on_host)
+            except PortsUnavailable as e:
+                LOG.warning("Failed to look for ports whose binding to this "
+                            "host was activated: %s", e)
+            except Exception:
+                LOG.exception("Failed to look for ports whose binding to "
+                              "this host was activated")
+            try:
+                self._notify_plugged_vnics(ports_on_host)
+            except PortsUnavailable as e:
+                LOG.warning("Failed to look for VFs plugged for ports live "
+                            "migrated to this host: %s", e)
+            except Exception:
+                LOG.exception("Failed to look for VFs plugged for ports "
+                              "live migrated to this host")
             # sleep till end of polling interval
             elapsed = (time.time() - start)
             if (elapsed < self._polling_interval):

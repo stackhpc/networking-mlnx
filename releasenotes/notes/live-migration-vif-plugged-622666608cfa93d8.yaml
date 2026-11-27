@@ -1,0 +1,27 @@
+---
+features:
+  - |
+    Live migration of an instance with an InfiniBand port no longer fails
+    with Nova's default ``[compute] live_migration_wait_for_vif_plug =
+    True``. Before it copies the guest, Nova waits for a
+    ``network-vif-plugged`` event from each of the instance's ports. For an
+    InfiniBand port, ``neutron-mlnx-agent`` on the destination host now
+    reports the port up once Nova has plugged its virtual function there,
+    which ``eswitchd`` records, and Neutron forwards this to Nova as that
+    event. This doesn't change the port's status or configure the virtual
+    function. See the live migration page of the documentation.
+upgrade:
+  - |
+    Upgrade and restart both ``neutron-mlnx-agent`` and ``eswitchd`` on the
+    compute hosts that can receive instances with InfiniBand ports,
+    restarting ``eswitchd`` before ``neutron-mlnx-agent`` or together with
+    it. The agent otherwise notices the upgraded ``eswitchd`` within a
+    minute. With an older ``eswitchd``, ``neutron-mlnx-agent`` logs a
+    warning, nothing sends the event, and live migrations fail when
+    ``[DEFAULT] vif_plugging_timeout`` expires, unless ``[compute]
+    live_migration_wait_for_vif_plug = False`` is set on the destination
+    host. Once both are upgraded, that setting can be removed if it was set
+    to work around this. Restarting ``eswitchd`` makes it forget the virtual
+    functions that Nova has plugged on its host, so a live migration to that
+    host whose port the agent hasn't reported yet fails when ``[DEFAULT]
+    vif_plugging_timeout`` expires, and can be retried.

@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    When the SDN controller can't be reached, or doesn't answer in time,
+    ``mlnx_sdn_assist``'s journal now handles it as a connection error, and
+    retries the request. Previously the error ended the journal's whole sync
+    run, and a request being sent was left in the ``processing`` state until
+    the cleanup reset it.

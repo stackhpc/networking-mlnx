@@ -21,4 +21,14 @@ mlnx_opts = [
                 default="True",
                 help=_("Generate client-id according to send "
                        "dhcp-client-identifier = hardware")),
+    cfg.BoolOpt('allow_unenforced_pkeys',
+                default=False,
+                help=_("Bind ports on VLAN segments even if the "
+                       "mlnx_sdn_assist mechanism driver doesn't sync the "
+                       "segment's physical network to an SDN controller, "
+                       "which adds ports to their partition key. Only set "
+                       "this if the subnet manager's partition configuration "
+                       "matches the networks' segmentation IDs, or the "
+                       "virtual functions are ConnectX-3 ones, whose "
+                       "partition key eswitchd sets.")),
 ]
