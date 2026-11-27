@@ -15,6 +15,7 @@
 
 import functools
 import re
+from urllib import parse
 
 from neutron.db import provisioning_blocks
 from neutron.plugins.ml2 import db as ml2_db
@@ -50,32 +51,56 @@ MAX_RETRY_DELAY = 300
 FAIL_AGAIN_WINDOW = 300
 
 
-# The job links that UFM's HTML replies contain, such as /app/jobs/1. They
-# are added to the controller's URL, so nothing else is accepted.
+# The job links that UFM's Location headers contain, such as
+# /ufmRestV3/app/jobs/1, once the [sdn] url path is removed. They are added
+# to the controller's URL, so nothing else is accepted.
 JOB_LINK_RE = re.compile(r'[a-zA-Z0-9/]+')
 # The length of the sdn_journal.job_id column.
 MAX_JOB_ID_LENGTH = 36
+
+
+def _job_id_from_link(link):
+    """Return the job that a link names, relative to [sdn] url, or None"""
+    try:
+        url = parse.urlsplit(link)
+    except ValueError:
+        return None
+    if url.query or url.fragment:
+        return None
+    # The job is fetched from the controller's URL, so the link's scheme
+    # and host are ignored. Remove the URL's path, such as /ufmRestV3, from
+    # a link that starts with it.
+    path = url.path
+    prefix = parse.urlsplit(cfg.CONF.sdn.url).path.rstrip('/') + '/'
+    if prefix != '/' and path.startswith(prefix):
+        path = path[len(prefix):]
+    if not JOB_LINK_RE.fullmatch(path):
+        return None
+    path = path.strip('/')
+    if path and len(path) <= MAX_JOB_ID_LENGTH:
+        return path
+    return None
 
 
 def _get_job_id(response):
     """Return the job that a response to a request names, or None
 
     UFM answers with the job as JSON, except for some requests, such as a
-    port's POST, which it answers with an HTML page that links to the job.
-    A link is returned relative to the controller's URL ([sdn] url).
+    port's POST, which it answers with an HTML page and names the job in
+    the Location header. A job is returned relative to the controller's
+    URL ([sdn] url).
     """
     try:
         return response.json()
     except ValueError:
         pass
-
-    try:
-        return response.headers['Location']
-    except KeyError:
-        pass
-
-    LOG.debug("SDN Controller response is neither JSON nor has Location set "
-              "in its headers")
+    link = response.headers.get('Location')
+    job_id = _job_id_from_link(link) if link else None
+    if job_id:
+        return job_id
+    # The caller logs the response.
+    LOG.debug("SDN Controller response is neither JSON nor has a Location "
+              "header that names a usable job")
     return None
 
 

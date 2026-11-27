@@ -12,8 +12,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 import datetime
-import html.parser
-import re
 import unittest.mock as mock
 
 from neutron.db import provisioning_blocks
@@ -836,18 +834,49 @@ class SdnDriverTestCase(SdnConfigBase):
             self.assertEqual(sdn_const.COMPLETED, row.state)
             self._db_cleanup()
 
-    @staticmethod
-    def _old_html_job_id(text):
-        """The job link that the code NEO needed found, or None"""
-        parser = html.parser.HTMLParser()
-        parser.feed(text)
-        parser.handle_starttag('a', [])
-        url = parser.get_starttag_text()
-        match = url and re.match(r'<a href="([a-zA-Z0-9\/]+)">', url)
-        return match.group(1) if match else None
+    def test_get_job_id(self):
+        self.conf.set_override('url', 'https://ufm/ufmRestV3',
+                               sdn_const.GROUP_OPT)
+        html = '<html>Job created</html>'
+        cases = [
+            ('"app/jobs/1"', None, 'app/jobs/1'),
+            # JSON is used before the header.
+            ('"app/jobs/1"', '/ufmRestV3/app/jobs/2', 'app/jobs/1'),
+            (html, '/ufmRestV3/app/jobs/1', 'app/jobs/1'),
+            (html, '/app/jobs/1', 'app/jobs/1'),
+            (html, 'app/jobs/1', 'app/jobs/1'),
+            # Only the path is used, whichever host the link names.
+            (html, 'https://ufm/ufmRestV3/app/jobs/1', 'app/jobs/1'),
+            (html, 'https://ufm.example:8443/ufmRestV3/app/jobs/1',
+             'app/jobs/1'),
+            # Too long for the journal's job_id column.
+            (html, 'https://ufm/ufmRestV3/app/jobs/%s' % ('1' * 30), None),
+            (html, '/app/jobs/1?x=1', None),
+            (html, '/ufmRestV3/app/job-1', None),
+            (html, '/app/jobs/1#x', None),
+            (html, '../../app/jobs/1', None),
+            (html, '/ufmRestV3/', None),
+            (html, '', None),
+            (html, None, None),
+        ]
+        for text, location, job_id in cases:
+            headers = {'Location': location} if location is not None else {}
+            self.assertEqual(job_id, journal._get_job_id(
+                self._response(requests.codes.accepted, text, headers)),
+                (text, location))
+
+    def test_get_job_id_url_path_with_other_characters(self):
+        # Only the job's part of the link is checked, not the [sdn] url
+        # path it starts with.
+        self.conf.set_override('url', 'https://proxy/ufm-api/ufm_v3',
+                               sdn_const.GROUP_OPT)
+        response = self._response(requests.codes.accepted, '<html></html>',
+                                  {'Location': '/ufm-api/ufm_v3/app/jobs/1'})
+        self.assertEqual('app/jobs/1', journal._get_job_id(response))
 
     def test_sync_pending_rows_delete_without_job_id_is_retried(self):
         # Nothing shows that the deletion was done, so it is sent again.
+        # An HTML page without a Location header names no job.
         for text in ('null', '<html>no job link</html>'):
             self._call_operation_object(sdn_const.DELETE, sdn_const.PORT)
             with mock.patch('requests.request',
@@ -1122,12 +1151,12 @@ class SdnDriverTestCase(SdnConfigBase):
                            'ip_version': 4}], opts)
 
     @staticmethod
-    def _response(status_code, text='', headers={}):
+    def _response(status_code, text='', headers=None):
         response = requests.Response()
         response.status_code = status_code
         response._content = text.encode()
         response.url = cfg.CONF.sdn.url
-        response.headers = CaseInsensitiveDict(headers)
+        response.headers = CaseInsensitiveDict(headers or {})
         return response
 
     @db_api.CONTEXT_WRITER
@@ -1290,19 +1319,33 @@ class SdnDriverTestCase(SdnConfigBase):
             rows = db.get_all_db_rows(self.context)
             self.assertEqual(0, len(rows))
 
-    def test_port_create_with_location_header(self):
-        context = self._get_mock_port_operation_context()
-        db.create_pending_row(self.context, sdn_const.PORT,
-                              context.current['id'], sdn_const.POST,
-                              context.current)
-
-        response = self._response(requests.codes.ok, '<html>some html</html>',
-                                  {'Location': '/ufmRest/jobs/1'})
+    def test_sync_pending_rows_location_header(self):
+        # UFM answers a port's POST with an HTML page, and names its job in
+        # the Location header.
+        self.conf.set_override('url', 'https://ufm/ufmRestV3',
+                               sdn_const.GROUP_OPT)
+        self.worker = journal.SdnJournalWorker()
+        self._call_operation_object(sdn_const.POST, sdn_const.PORT)
+        response = self._response(requests.codes.accepted,
+                                  '<html>Job created</html>',
+                                  {'Location': '/ufmRestV3/app/jobs/7'})
         with mock.patch('requests.request', return_value=response):
             self.worker._sync_pending_rows(self.context, False)
 
         row = db.get_all_db_rows(self.context)[0]
         self.assertEqual(sdn_const.MONITORING, row.state)
+        self.assertEqual('app/jobs/7', row.job_id)
+
+        # The job is checked at the controller's URL.
+        with mock.patch('requests.request',
+                        return_value=self._response(
+                            requests.codes.ok,
+                            '{"Status": "Completed"}')) as request:
+            self.worker._sync_progress_rows(self.context)
+        self.assertEqual('https://ufm/ufmRestV3/app/jobs/7',
+                         request.call_args.kwargs['url'])
+        row = db.get_all_db_rows(self.context)[0]
+        self.assertEqual(sdn_const.COMPLETED, row.state)
 
 
 class SdnPkeyProvisioningTestCase(SdnConfigBase):
@@ -2133,6 +2176,23 @@ class SdnPkeyProvisioningTestCase(SdnConfigBase):
         set_status = self._sync_pending(
             self._response(requests.codes.ok, 'null'))
         self._assert_port_failed(port_id, set_status)
+
+    def test_post_without_usable_location_logs_response(self):
+        # The log must show why no job was found, for example that the
+        # controller answered with HTML and a Location header that names
+        # no usable job.
+        port_id, _row = self._make_blocked_port()
+        response = self._response(
+            requests.codes.accepted, '<html>Job created</html>',
+            {'Content-Type': 'text/html',
+             'Location': '/ufmRestV3/jobs/1?x=1'})
+        with self.assertLogs(journal.__name__, 'ERROR') as logs:
+            set_status = self._sync_pending(response)
+        self._assert_port_failed(port_id, set_status)
+        logged = '\n'.join(logs.output)
+        for text in ('HTTP 202', 'text/html', '/ufmRestV3/jobs/1?x=1',
+                     '<html>Job created</html>', port_id):
+            self.assertIn(text, logged)
 
     def test_moved_port_logs_why_row_does_not_hold_it(self):
         port_id, _row = self._make_blocked_port(row_host='other-host')
